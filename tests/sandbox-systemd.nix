@@ -131,6 +131,10 @@ pkgs.testers.runNixOSTest {
       (import ../nix/nixos.nix { inherit home-manager; })
     ];
     nixpkgs.pkgs = pkgs.lib.mkForce pkgs;
+    specialisation = pkgs.lib.optionalAttrs (!benchmark && !diagnostics) {
+      updated.configuration.home-manager.users.alice.programs.nook.sandboxes.check.environment.NOOK_TEST_REVISION =
+        pkgs.lib.mkForce "updated";
+    };
     services.pipewire.enable = true;
     services.pipewire.pulse.enable = true;
     services.pipewire.extraConfig.pipewire."90-sandbox-test"."context.objects" = [
@@ -261,6 +265,7 @@ pkgs.testers.runNixOSTest {
         environment.SANDBOX_SHARED_MODULE = "applied";
       };
       programs.nook.sandboxes.check = {
+        environment.NOOK_TEST_REVISION = "original";
         imports = [
           { environment.SANDBOX_PROFILE_IMPORT = "applied"; }
         ];
@@ -418,32 +423,38 @@ pkgs.testers.runNixOSTest {
       "d /tmp/.X11-unix 1777 root root -"
     ];
   };
-  testScript = ''
-    IMAGE = "${image}"
-    POLICY = "${policy}"
-    COREUTILS = "${pkgs.coreutils}"
-    PORTAL_CLIENT = "${./sandbox-portal-client.py}"
-    APPEARANCE_CLIENT = "${./sandbox-appearance-client.py}"
-    DESKTOP_PYTHON = "${portalPython}/bin/python3"
-    BENCHMARK_SCRIPT = "${./benchmark-sandbox.py}"
-    PROFILE_SCRIPT = "${./profile-sandbox-startup.py}"
-    NIX_BUILD_CHECK = "${pkgs.writeText "sandbox-nix-build-check.nix" ''
-      builtins.derivation {
-        name = "sandbox-daemon-proxy-check";
-        system = "${pkgs.stdenv.hostPlatform.system}";
-        # Reattach dependency context when the guest evaluates this file, so
-        # the host daemon includes Bash's closure in the build sandbox.
-        builder = (builtins.storePath "${pkgs.bash}") + "/bin/bash";
-        args = [ "-c" "echo daemon-proxy-works > $out" ];
-      }
-    ''}"
-  ''
-  + builtins.readFile (
-    if diagnostics then
-      ./profile-sandbox-startup-vm.py
-    else if benchmark then
-      ./benchmark-sandbox-vm.py
-    else
-      ./sandbox-systemd.py
-  );
+  testScript =
+    { nodes, ... }:
+    ''
+      IMAGE = "${image}"
+      POLICY = "${policy}"
+      COREUTILS = "${pkgs.coreutils}"
+      PORTAL_CLIENT = "${./sandbox-portal-client.py}"
+      APPEARANCE_CLIENT = "${./sandbox-appearance-client.py}"
+      DESKTOP_PYTHON = "${portalPython}/bin/python3"
+      BENCHMARK_SCRIPT = "${./benchmark-sandbox.py}"
+      PROFILE_SCRIPT = "${./profile-sandbox-startup.py}"
+      NIX_BUILD_CHECK = "${pkgs.writeText "sandbox-nix-build-check.nix" ''
+        builtins.derivation {
+          name = "sandbox-daemon-proxy-check";
+          system = "${pkgs.stdenv.hostPlatform.system}";
+          # Reattach dependency context when the guest evaluates this file, so
+          # the host daemon includes Bash's closure in the build sandbox.
+          builder = (builtins.storePath "${pkgs.bash}") + "/bin/bash";
+          args = [ "-c" "echo daemon-proxy-works > $out" ];
+        }
+      ''}"
+    ''
+    + pkgs.lib.optionalString (!benchmark && !diagnostics) ''
+      BASE_SYSTEM = "${nodes.machine.system.build.toplevel}"
+      UPDATED_SYSTEM = "${nodes.machine.specialisation.updated.configuration.system.build.toplevel}"
+    ''
+    + builtins.readFile (
+      if diagnostics then
+        ./profile-sandbox-startup-vm.py
+      else if benchmark then
+        ./benchmark-sandbox-vm.py
+      else
+        ./sandbox-systemd.py
+    );
 }

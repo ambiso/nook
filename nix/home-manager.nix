@@ -377,6 +377,8 @@ let
         devices = lib.mkOption {
           type = types.listOf types.str;
           default = [ ];
+          example = [ "/dev/kvm" ];
+          description = "Host character devices or device directories to forward when accessible to the owner. Add /dev/kvm to allow hardware-accelerated virtual machines.";
         };
         devicePatterns = lib.mkOption {
           type = types.listOf types.str;

@@ -43,6 +43,9 @@ in
         p:
         lib.nameValuePair (unitName p) {
           description = "Sandbox ${p.name} (%i), owned by ${p.username}";
+          # A rebuild publishes the next boot's definition. Running guests keep
+          # their pinned closure until the owner explicitly stops or restarts them.
+          restartIfChanged = false;
           requires = [ "systemd-machined.service" ];
           after = [ "systemd-machined.service" ];
           path = [

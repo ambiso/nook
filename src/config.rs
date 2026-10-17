@@ -79,6 +79,29 @@ fn pairs(path: &Path) -> Result<BTreeMap<String, String>> {
     Ok(out)
 }
 impl Profile {
+    pub fn running_profile(&self, instance: &str) -> Result<Self> {
+        // This GC root is published by the root supervisor in its root-owned
+        // RuntimeDirectory, not in the owner's writable session directory.
+        let directory = fs::canonicalize(
+            Path::new("/run")
+                .join(self.machine(instance)?)
+                .join("profile-root"),
+        )?;
+        if !directory.starts_with("/nix/store") {
+            return Err("running profile must be an immutable Nix store path".into());
+        }
+        let running = Self::load(&directory)?;
+        self.check_running_identity(&running)?;
+        Ok(running)
+    }
+
+    fn check_running_identity(&self, running: &Self) -> Result<()> {
+        if running.uid()? != self.uid()? || running.get("name")? != self.get("name")? {
+            return Err("running profile belongs to a different sandbox or owner".into());
+        }
+        Ok(())
+    }
+
     pub fn guest_working_directory(&self, instance: &str, directory: &Path) -> Result<PathBuf> {
         let home = PathBuf::from(self.get("home")?);
         let Some(host_home) = self.persistent_home(instance)? else {
@@ -268,6 +291,8 @@ mod tests {
             values: BTreeMap::from([
                 ("state".into(), state.to_string_lossy().into_owned()),
                 ("home".into(), "/home/test".into()),
+                ("name".into(), "dev".into()),
+                ("uid".into(), "1000".into()),
                 (
                     "persistent".into(),
                     if persistent { "1" } else { "0" }.into(),
@@ -279,6 +304,18 @@ mod tests {
             system_rules: Vec::new(),
             pasta: Vec::new(),
         }
+    }
+
+    #[test]
+    fn running_generation_may_differ_but_owner_and_profile_must_match() {
+        let installed = profile(Path::new("/new-home"), true);
+        let mut running = profile(Path::new("/old-home"), true);
+        assert!(installed.check_running_identity(&running).is_ok());
+        running.values.insert("uid".into(), "1001".into());
+        assert!(installed.check_running_identity(&running).is_err());
+        running.values.insert("uid".into(), "1000".into());
+        running.values.insert("name".into(), "vr".into());
+        assert!(installed.check_running_identity(&running).is_err());
     }
 
     #[test]

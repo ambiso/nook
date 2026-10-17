@@ -35,10 +35,28 @@ Include `nook` in your flake's outputs arguments and add
 Manager NixOS module and installs the host services and authorization rules.
 Give sandbox owners explicit numeric UIDs in your NixOS user configuration.
 
-In an existing Home Manager user configuration:
+For these desktop and development examples, enable unfree packages and graphics
+on the host and use the host's package set in Home Manager. Steam and many games
+need the 32-bit drivers on x86_64:
+
+```nix
+nixpkgs.config.allowUnfree = true;
+home-manager.useGlobalPkgs = true;
+hardware.graphics = {
+  enable = true;
+  enable32Bit = true;
+};
+```
+
+In an existing Home Manager user configuration, the following defines five
+profiles. GPU access, audio, networking, and persistent homes are enabled by
+default. Each GUI profile installs an application entry in your desktop launcher.
 
 ```nix
 { pkgs, lib, ... }:
+let
+  controllers = [ "/dev/input" "/dev/uinput" "/dev/bus/usb" ];
+in
 {
   programs.nook = {
     enable = true;
@@ -47,26 +65,98 @@ In an existing Home Manager user configuration:
       hostSessionBus = lib.mkDefault false;
     };
     sandboxes.dev = {
-      packages = with pkgs; [ git ripgrep ];
+      packages = with pkgs; [ git ripgrep rustup qemu ];
       nix = true;
-    };
-    sandboxes.browser = {
-      packages = [ pkgs.firefox ];
-      guiEntryPoint = "/bin/firefox";
+      podman = true;
       portals = true;
+      startX = true;
+      devices = [ "/dev/kvm" ];
+    };
+    sandboxes.zotero = {
+      packages = [ pkgs.zotero ];
+      guiEntryPoint = "/bin/zotero";
+      desktopFile = "zotero.desktop";
+      portals = true;
+      audio = false;
+      environment.MOZ_ENABLE_WAYLAND = "1";
+      # Let a host browser's Zotero Connector reach this instance.
+      networkArgs = [
+        "--no-map-gw" "--dns-forward" "169.254.1.1"
+        "--tcp-ports" "127.0.0.1/23119" "--host-lo-to-ns-lo"
+        "--udp-ports" "none" "--tcp-ns" "none" "--udp-ns" "none"
+      ];
+    };
+    sandboxes.steam = {
+      packages = [ pkgs.steam ];
+      guiEntryPoint = "/bin/steam";
+      desktopFile = "steam.desktop";
+      startX = true;
+      portals = true;
+      devices = controllers;
+      devicePatterns = [ "/dev/hidraw*" ];
+    };
+    sandboxes.heroic = {
+      packages = [ pkgs.heroic ];
+      guiEntryPoint = "/bin/heroic";
+      desktopFile = "com.heroicgameslauncher.hgl.desktop";
+      startX = true;
+      portals = true;
+      devices = controllers;
+      devicePatterns = [ "/dev/hidraw*" ];
+    };
+    sandboxes.signal = {
+      packages = [ pkgs.signal-desktop ];
+      guiEntryPoint = "/bin/signal-desktop";
+      desktopFile = "signal.desktop";
+      portals = true;
+      hostSessionBus = true;
+      sessionBusPolicies."org.freedesktop.secrets" = "talk";
     };
   };
 }
 ```
 
-Rebuild using your usual `nixos-rebuild switch` command. Restart running
-instances when changing their packages, services, or configuration. The host
+Steam and Heroic use private Xwayland for games; they do not receive the host's
+X11 socket. Controller access includes the selected USB and input devices, so
+trim those lists to suit your hardware. Signal's secrets policy allows it to
+use the host keyring. Remove it and disable `hostSessionBus` if that access is
+unwanted. These examples keep app data in each profile's own home. Moving an
+existing installation's data requires copying it or adding an explicit mount.
+Zotero's Connector port can be published by only one instance at a time.
+
+Rebuild using your usual `nixos-rebuild switch` command. Rebuilds leave running
+instances on their current configuration. Stop and launch an instance to apply
+changes to its packages, services, or permissions. The host
 module derives the owner's UID and GID automatically. Shells are package options:
 set `sandboxes.dev.shell = pkgs.fish`, for example. The default shell is Fish.
 
 `defaults` and each sandbox are Nix modules: imports, merged definitions,
 `lib.mkDefault`, and `lib.mkForce` work normally. Add guest system services with
 `nixosModules` and guest user configuration with `homeManagerModules`.
+
+For example, load a Home Manager module into dev, together with an inline setting:
+
+```nix
+programs.nook.sandboxes.dev.homeManagerModules = [
+  ./dev-home.nix
+  { programs.git.enable = true; }
+];
+```
+
+Create `dev-home.nix` next to the file defining that profile:
+
+```nix
+{ pkgs, ... }:
+{
+  home.packages = [ pkgs.neovim ];
+  home.sessionVariables.EDITOR = "nvim";
+}
+```
+
+These settings apply inside dev, including its named and ephemeral instances.
+The host's Home Manager settings are not copied into the guest. Nook supplies
+the username, home directory, and state version automatically and activates the
+modules once per successful generation in each instance's home.
 
 ## Use
 
@@ -76,10 +166,13 @@ nk launch dev                         # start or join dev's main instance
 nk launch dev --name my-project        # independent persistent instance
 nk launch dev --ephemeral              # new instance with a temporary home
 nk launch dev -- git --version         # run a command
-nk gui browser                        # launch the configured GUI application
+nk gui zotero                         # launch the configured GUI application
 nk list
 nk stop dev --name my-project
 ```
+
+`nk l dev` is short for `nk launch dev`; `nk j dev` is short for `nk join dev`.
+`join` requires an already running instance.
 
 In the selector, use arrows or **j/k** to select a row, **Enter** to launch/join,
 **n** to create a named instance from that profile, **e** for an ephemeral
@@ -112,6 +205,12 @@ Only Wayland is forwarded from the host display. `startX = true` starts a privat
 Xwayland satellite inside each instance; the host's X11 sockets are not exposed.
 GPU and audio access are enabled by default and can be disabled with `gpu` and
 `audio`. Other devices are selected with `devices` or `devicePatterns`.
+For hardware-accelerated VMs, the dev example explicitly forwards `/dev/kvm`.
+It is not forwarded by default. The host must provide KVM and the owner must
+have read/write access to that device; Nook does not grant missing host access.
+Set `programs.nook.defaults.devices = [ "/dev/kvm" ];` to allow it in every profile.
+Use `qemu-system-x86_64 -accel kvm …` inside dev. VM disk images stored in its
+home remain private to that instance.
 
 Interactive desktop portals are **off by default**. Enabling `portals` permits
 host consent dialogs and access to selected host files through the document
@@ -128,6 +227,17 @@ use `networkArgs` to change that behavior or `network = false` to disable
 network access. See [architecture and configuration](docs/architecture.md) for
 the D-Bus policies, storage model, permissions, and troubleshooting commands.
 
+## Security
+
+You are responsible for the code you run and the access you give it. Shared
+mounts, devices, the host Nix daemon, and desktop services expose parts of the
+host to sandboxed programs. Review the configuration before using it for
+untrusted code, and keep backups of data you care about.
+
+Nook is experimental. I provide no guarantee of security, isolation, correctness,
+or protection against data loss. Use it at your own risk; the license's warranty
+and liability terms apply.
+
 ## Development
 
 See [development and tests](docs/development.md) for the Rust environment, native
@@ -141,3 +251,9 @@ out of a personal NixOS configuration, where development included desktop use,
 Rust tests, Miri, and headless VM tests. The [development notes](docs/development.md)
 distinguish checks on this extraction from earlier testing. Desktop dialogs,
 GPU applications, and hardware still need testing on the system where you use them.
+
+## Credits
+
+Nook started as a [NixPak](https://github.com/nixpak/nixpak) configuration. NixPak
+provided the foundation for the original setup and shaped how applications,
+mounts, and desktop access were configured. Thanks to its authors and contributors.

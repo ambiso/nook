@@ -73,10 +73,12 @@ Fresh homes, changed generations, and failed activations run activation again.
 Use systemd services for work needed at every boot. Remove the success marker
 before restarting to force reactivation.
 
-Changes to guest packages, services, and permissions require restarting an
-instance. A rebuild updates the host's definitions; it does not apply a new guest
-configuration inside an already-running system. Running instances hold Nix GC
-roots so their current configuration stays available.
+Rebuilds leave running instances alone (`restartIfChanged = false`). Changes to
+guest packages, services, and permissions take effect when you stop and launch
+an instance again. Running instances hold Nix GC roots so their current
+configuration stays available. Joining them, including through GUI and shell
+wrappers, uses that pinned generation. The root helper still authorizes the
+caller against the currently installed profile before entering the older guest.
 
 Shell and command launches translate the host's physical current directory
 when it lies within the selected instance's backing home. Symlink aliases work;

@@ -50,8 +50,10 @@ enum Action {
     /// List configured profiles and running instances
     List,
     /// Start an instance if necessary, then run a command or shell
+    #[command(visible_alias = "l")]
     Launch(Launch),
     /// Join an instance that is already running
+    #[command(visible_alias = "j")]
     Join(Launch),
     /// Launch the profile's default GUI application with optional arguments
     Gui(Launch),
@@ -229,19 +231,44 @@ fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> R
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum EntryPoint {
+    Command,
+    Shell,
+    Gui,
+}
+
 fn launch(
     profile: &Profile,
     instance: &str,
     command: &[String],
     start: bool,
-    gui: bool,
+    entry_point: EntryPoint,
 ) -> Result<i32> {
+    let gui = matches!(entry_point, EntryPoint::Gui);
     if !is_running(profile, instance) {
         if !start {
             return Err("instance is not running; use launch to start it".into());
         }
+        if gui && profile.get("gui")?.is_empty() {
+            return Err("profile has no default GUI application".into());
+        }
         start_instance(profile, instance, gui)?;
     }
+    let running = profile.running_profile(instance)?;
+    let mut arguments = Vec::new();
+    let executable = match entry_point {
+        EntryPoint::Command => None,
+        EntryPoint::Shell => Some(running.get("shell")?),
+        EntryPoint::Gui => Some(running.get("gui")?),
+    };
+    if let Some(executable) = executable {
+        if executable.is_empty() {
+            return Err("profile has no default GUI application".into());
+        }
+        arguments.push(executable.to_owned());
+    }
+    arguments.extend_from_slice(command);
     // systemd's machine bus transport needs host privileges to enter the
     // machine namespaces. Polkit authorizes this fixed helper; the helper
     // validates the installed profile and always enters as its owner.
@@ -257,7 +284,7 @@ fn launch(
         if let Ok(directory) = env::current_dir() {
             enter
                 .arg("--entry-directory")
-                .arg(profile.guest_working_directory(instance, &directory)?);
+                .arg(running.guest_working_directory(instance, &directory)?);
         }
     }
     // pkexec intentionally sanitizes its environment. Carry the small UI
@@ -267,7 +294,7 @@ fn launch(
             .arg("--entry-environment")
             .arg(format!("{key}={value}"));
     }
-    enter.arg("--").args(command);
+    enter.arg("--").args(arguments);
     Ok(enter.status()?.code().unwrap_or(1))
 }
 
@@ -294,6 +321,10 @@ fn enter_instance(
     if !declared.starts_with("/nix/store") || declared != fs::canonicalize(&profile.dir)? {
         return Err("entry helper accepts only profiles installed by the host module".into());
     }
+    // Authorization uses today's installed profile. Entry must use the guest's
+    // pinned generation, which can intentionally outlive a host rebuild.
+    let running = profile.running_profile(instance)?;
+    let profile = &running;
     let home = Path::new(profile.get("home")?);
     let directory = directory.unwrap_or(home);
     if !directory.starts_with(home) {
@@ -433,7 +464,7 @@ fn run() -> Result<i32> {
                 &choice.instance,
                 &[],
                 true,
-                false,
+                EntryPoint::Command,
             ),
             None => Ok(0),
         };
@@ -457,11 +488,11 @@ fn run() -> Result<i32> {
                 .unwrap_or(1))
         }
         action => {
-            let (request, start, executable) = match action {
-                Action::Launch(request) => (request, true, None),
-                Action::Join(request) => (request, false, None),
-                Action::Gui(request) => (request, true, Some("gui")),
-                Action::Shell(request) => (request, true, Some("shell")),
+            let (request, start, entry_point) = match action {
+                Action::Launch(request) => (request, true, EntryPoint::Command),
+                Action::Join(request) => (request, false, EntryPoint::Command),
+                Action::Gui(request) => (request, true, EntryPoint::Gui),
+                Action::Shell(request) => (request, true, EntryPoint::Shell),
                 _ => unreachable!(),
             };
             let profile = find_profile(&profiles, &request.selection.profile)?;
@@ -470,22 +501,7 @@ fn run() -> Result<i32> {
             } else {
                 request.selection.id()
             };
-            let mut command = Vec::new();
-            if let Some(key) = executable {
-                let program = profile.get(key)?;
-                if program.is_empty() {
-                    return Err("profile has no default GUI application".into());
-                }
-                command.push(program.to_owned());
-            }
-            command.extend(request.command);
-            launch(
-                profile,
-                &instance,
-                &command,
-                start,
-                executable == Some("gui"),
-            )
+            launch(profile, &instance, &request.command, start, entry_point)
         }
     }
 }
@@ -508,6 +524,10 @@ mod tests {
     #[test]
     fn cli_definition_is_consistent() {
         Cli::command().debug_assert();
+        let launch = Cli::try_parse_from(["nk", "l", "dev"]).unwrap();
+        assert!(matches!(launch.command, Some(Action::Launch(_))));
+        let join = Cli::try_parse_from(["nk", "j", "dev"]).unwrap();
+        assert!(matches!(join.command, Some(Action::Join(_))));
     }
 
     #[test]

@@ -571,7 +571,49 @@ for desktop_id, query in [
         podman unshare cat /proc/self/uid_map
     """)
     inside("timeout 5 pw-cli info 0; timeout 5 pactl info")
+
+    # A real configuration switch must leave the process and pinned generation
+    # intact. Joining through the new wrapper must still execute the old shell.
+    unit = "sandbox-1000-check@main.service"
+    invocation = machine.succeed(
+        f"systemctl show {unit} -p InvocationID --value"
+    ).strip()
+    running_profile = machine.succeed(
+        "readlink -f /run/sbx-1000-check-main/profile-root"
+    ).strip()
+    old_shell = next(
+        line.split("\t", 1)[1]
+        for line in machine.succeed(f"cat {running_profile}/profile").splitlines()
+        if line.startswith("shell\t")
+    )
+    machine.succeed(f"{UPDATED_SYSTEM}/bin/switch-to-configuration test", timeout=120)
+    assert (
+        machine.succeed(f"systemctl show {unit} -p InvocationID --value").strip()
+        == invocation
+    )
+    assert (
+        machine.succeed("readlink -f /run/sbx-1000-check-main/profile-root").strip()
+        == running_profile
+    )
+    assert (
+        machine.succeed("readlink -f /etc/sandbox/profiles/1000/check").strip()
+        != running_profile
+    )
+    assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "original"
+    assert (
+        cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip()
+        == old_shell
+    )
+    assert (
+        cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip()
+        == old_shell
+    )
+
+    # An explicit stop/start picks up the newly installed profile.
     cli("stop check")
+    assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "updated"
+    cli("stop check")
+    machine.succeed(f"{BASE_SYSTEM}/bin/switch-to-configuration test", timeout=120)
 except Exception:
     machine.execute("journalctl -b --no-pager -u sandbox-1000-check@main.service")
     raise
