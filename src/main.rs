@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod completion;
 mod config;
 mod portal;
 mod storage;
@@ -21,7 +22,7 @@ use std::{
 #[command(name = "nk", about = "Nook: native systemd sandboxes", version)]
 struct Cli {
     /// Profile catalog; defaults to the current owner's installed profiles
-    #[arg(long, env = "NOOK_PROFILES")]
+    #[arg(long, env = "NOOK_PROFILES", value_hint = clap::ValueHint::DirPath)]
     profiles: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Action>,
@@ -519,6 +520,10 @@ fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
 }
 
 fn run() -> Result<i32> {
+    // pkexec authorization must never enable completion handling in the root helper.
+    if env::var_os("PKEXEC_UID").is_none() {
+        completion::complete();
+    }
     let cli = Cli::parse();
     if let Some(arguments) = cli.enter {
         return enter_instance(

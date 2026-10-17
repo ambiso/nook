@@ -503,6 +503,11 @@ let
         done
         makeWrapper ${launcher}/bin/nk "$out/bin/nk" --set NOOK_PROFILES ${catalog}
         ln -s nk "$out/bin/sandbox"
+        for completion in bash-completion zsh fish; do
+          if [ -d "${launcher}/share/$completion" ]; then
+            ln -s "${launcher}/share/$completion" "$out/share/$completion"
+          fi
+        done
         ${lib.concatStringsSep "\n" (
           lib.mapAttrsToList (
             name: c:

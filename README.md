@@ -252,6 +252,12 @@ See [the migration guide](docs/migration-xdg-state.md) before changing existing
 profiles from their previous `~/.sandbox` paths.
 GUI entry points also appear in desktop application search.
 
+Bash, Zsh, and Fish completions are installed with the package and exported by
+the Home Manager launchers. They use Clap's CLI definitions for subcommands and
+flags, and discover configured profiles and saved/running instances when you
+press Tab. Both `nk` and `sandbox` are supported. Completion respects
+`NOOK_PROFILES` and an explicit `--profiles` catalog.
+
 To remove a named instance, stop it and run `nk delete PROFILE --name NAME`.
 The command shows the directory and asks for confirmation; use `--yes` for
 scripts. It removes that instance's saved directory and home with your host
