@@ -32,6 +32,25 @@ def inside(script, options=""):
     return cli("launch check " + options + command)
 
 
+with machine.subtest("automatic host UID/GID allocation and independent guest IDs"):
+    machine.wait_for_unit("home-manager-bob.service")
+    host_uid = int(machine.succeed("id -u bob").strip())
+    host_gid = int(machine.succeed("id -g bob").strip())
+    assert host_uid != 1000 and host_gid != 100
+    machine.wait_for_unit(f"user@{host_uid}.service")
+    command = "su - bob -c " + shlex.quote(
+        "nk launch dev -- sh -ec 'test $(id -u) = 1000; test $(id -g) = 100; echo owner-check > ~/owner-check'"
+    )
+    machine.succeed(command)
+    machine.succeed(
+        f"test $(stat -c %u /home/bob/.sandbox/dev/home/owner-check) = {host_uid}"
+    )
+    machine.succeed(
+        f"test $(stat -c %g /home/bob/.sandbox/dev/home/owner-check) = {host_gid}"
+    )
+    machine.succeed("systemctl stop sandbox-ubob-dev@main.service")
+
+
 try:
     shared_storage = "/home/alice/.sandbox/check/home/SharedStorage"
     assert (
@@ -51,7 +70,7 @@ try:
     )
     # Refusing a cold start must leave the service stopped.
     machine.fail(launcher("launch check --join -- true"))
-    machine.fail("systemctl is-active --quiet sandbox-1000-check@main.service")
+    machine.fail("systemctl is-active --quiet sandbox-ualice-check@main.service")
     # Concurrent cold starts must finish activation once and join one machine.
     first = launcher("launch check -- readlink /proc/self/ns/pid")
     machine.succeed(
@@ -112,7 +131,7 @@ try:
     )
     machine.fail(launcher("launch check --instance n-collision -- true"))
     failure_log = machine.succeed(
-        "journalctl -b -u sandbox-1000-check@n-collision.service --no-pager"
+        "journalctl -b -u sandbox-ualice-check@n-collision.service --no-pager"
     )
     assert "would be clobbered" in failure_log
     assert "sandbox home activation failed" in failure_log
@@ -184,7 +203,7 @@ try:
         PY
     """)
     machine.succeed(
-        "test -L /run/sbx-1000-check-main/profile-root; test $(readlink -f /run/sbx-1000-check-main/profile-root) = $(readlink -f /etc/sandbox/profiles/1000/check)"
+        "test -L /run/nook-ualice-check-main/profile-root; test $(readlink -f /run/nook-ualice-check-main/profile-root) = $(readlink -f /etc/sandbox/profiles/ualice/check)"
     )
     machine.succeed(
         "install -d -m700 -o alice -g users /home/alice/host-files /home/alice/host-files/directory"
@@ -325,13 +344,13 @@ try:
     cli("stop no-appearance")
     assert "activated" in inside("cat ~/activation-check")
     inside("systemctl --system is-active --quiet profile-module-check.service")
-    machine.succeed(as_owner("test ! -x /run/sbx-1000-check-main/image"))
+    machine.succeed(as_owner("test ! -x /run/nook-ualice-check-main/image"))
     machine.succeed("install -m600 /dev/null /home/alice/shared/host-root-secret")
     machine.succeed(
         "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
         f"--service-type=exec {COREUTILS}/bin/test ! -r /shared/host-root-secret"
     )
-    machine.succeed("systemctl is-active --quiet sandbox-1000-check@main.service")
+    machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
 
     result = inside("""
         systemctl --user is-active --quiet postgres.service
@@ -435,7 +454,7 @@ for desktop_id, query in [
     # home and service must outlive the terminal, and remain selectable stopped.
     machine.succeed(
         "mkdir -p /tmp/sandbox-tui-profiles; "
-        "ln -s /etc/sandbox/profiles/1000/check /tmp/sandbox-tui-profiles/check"
+        "ln -s /etc/sandbox/profiles/ualice/check /tmp/sandbox-tui-profiles/check"
     )
     machine.succeed(
         "(sleep 1; printf 'nfrom-tui\\r'; sleep 2; "
@@ -472,7 +491,7 @@ for desktop_id, query in [
 
     # Another user cannot start an owner's unit or use its privileged entry.
     machine.fail(
-        "su - bob -c 'systemctl --no-ask-password start sandbox-1000-check@n-foreign.service'"
+        "su - bob -c 'systemctl --no-ask-password start sandbox-ualice-check@n-foreign.service'"
     )
 
     # Named homes persist independently. Ephemeral homes are clean and are
@@ -524,7 +543,7 @@ for desktop_id, query in [
         if line.split()[1].startswith("e-")
     )
     cli("stop check --instance " + ephemeral)
-    machine.fail("test -e /run/sbx-1000-check-" + ephemeral)
+    machine.fail("test -e /run/nook-ualice-check-" + ephemeral)
     inside(
         """
         test ! -e ~/temporary
@@ -584,12 +603,12 @@ for desktop_id, query in [
 
     # A real configuration switch must leave the process and pinned generation
     # intact. Joining through the new wrapper must still execute the old shell.
-    unit = "sandbox-1000-check@main.service"
+    unit = "sandbox-ualice-check@main.service"
     invocation = machine.succeed(
         f"systemctl show {unit} -p InvocationID --value"
     ).strip()
     running_profile = machine.succeed(
-        "readlink -f /run/sbx-1000-check-main/profile-root"
+        "readlink -f /run/nook-ualice-check-main/profile-root"
     ).strip()
     old_shell = next(
         line.split("\t", 1)[1]
@@ -602,11 +621,11 @@ for desktop_id, query in [
         == invocation
     )
     assert (
-        machine.succeed("readlink -f /run/sbx-1000-check-main/profile-root").strip()
+        machine.succeed("readlink -f /run/nook-ualice-check-main/profile-root").strip()
         == running_profile
     )
     assert (
-        machine.succeed("readlink -f /etc/sandbox/profiles/1000/check").strip()
+        machine.succeed("readlink -f /etc/sandbox/profiles/ualice/check").strip()
         != running_profile
     )
     assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "original"
@@ -625,5 +644,5 @@ for desktop_id, query in [
     cli("stop check")
     machine.succeed(f"{BASE_SYSTEM}/bin/switch-to-configuration test", timeout=120)
 except Exception:
-    machine.execute("journalctl -b --no-pager -u sandbox-1000-check@main.service")
+    machine.execute("journalctl -b --no-pager -u sandbox-ualice-check@main.service")
     raise

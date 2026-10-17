@@ -6,6 +6,7 @@ needs no host root and contains only disposable fixtures.
 """
 
 import os
+import pwd
 from pathlib import Path
 import subprocess
 import sys
@@ -27,8 +28,10 @@ def main():
         (outside / "keep").write_text("host data")
         values = {
             "name": "test",
-            "uid": os.getuid(),
-            "gid": os.getgid(),
+            "identityVersion": 2,
+            "username": pwd.getpwuid(os.getuid()).pw_name,
+            "uid": 2345,
+            "gid": 2346,
             "state": state,
         }
         (profile / "profile").write_text(

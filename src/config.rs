@@ -78,28 +78,109 @@ fn pairs(path: &Path) -> Result<BTreeMap<String, String>> {
     }
     Ok(out)
 }
+// This encoding is also used by nix/owner-key.nix. Escaping the marker itself
+// keeps names such as a_b and a-5fb distinct in units and catalog directories.
+pub fn owner_key(username: &str) -> String {
+    use std::fmt::Write;
+    let mut key = String::from("u");
+    for byte in username.bytes() {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
+            key.push(char::from(byte));
+        } else {
+            write!(key, "-{byte:02x}").expect("writing to a String cannot fail");
+        }
+    }
+    key
+}
+
+fn resolve_owner(values: &mut BTreeMap<String, String>) -> Result<()> {
+    if values.get("identityVersion").is_some_and(|v| v == "2") {
+        let username = values.get("username").ok_or("missing owner username")?;
+        let account = nix::unistd::User::from_name(username)?
+            .ok_or_else(|| format!("sandbox owner account {username:?} does not exist"))?;
+        if account.uid.is_root() || account.gid.as_raw() == 0 {
+            return Err("sandbox owner must have non-root UID and primary GID".into());
+        }
+        // Never accept numeric host credentials supplied by a profile or its
+        // caller. Resolve the configured account through the host account DB.
+        values.insert("hostUid".into(), account.uid.to_string());
+        values.insert("hostGid".into(), account.gid.to_string());
+    } else if values.contains_key("identityVersion") {
+        return Err("unsupported profile identity version".into());
+    } else if values.contains_key("hostUid") || values.contains_key("hostGid") {
+        return Err("legacy profiles cannot override host credentials".into());
+    }
+    Ok(())
+}
+
 impl Profile {
     pub fn running_profile(&self, instance: &str) -> Result<Self> {
         // This GC root is published by the root supervisor in its root-owned
         // RuntimeDirectory, not in the owner's writable session directory.
-        let directory = fs::canonicalize(
-            Path::new("/run")
-                .join(self.machine(instance)?)
-                .join("profile-root"),
-        )?;
+        let runtime = self.supervisor_runtime(instance)?;
+        let directory = fs::canonicalize(runtime.join("profile-root"))?;
         if !directory.starts_with("/nix/store") {
             return Err("running profile must be an immutable Nix store path".into());
         }
         let running = Self::load(&directory)?;
         self.check_running_identity(&running)?;
+        if running.values.contains_key("identityVersion") {
+            // The store profile contains the account name, not the IDs that
+            // were used to boot this lifetime. Those are pinned separately by
+            // the root supervisor, outside every owner-writable directory.
+            let recorded = fs::read_to_string(runtime.join("host-identity"))?;
+            self.check_host_identity(&recorded)?;
+        }
         Ok(running)
     }
 
     fn check_running_identity(&self, running: &Self) -> Result<()> {
-        if running.uid()? != self.uid()? || running.get("name")? != self.get("name")? {
+        if running.host_uid()? != self.host_uid()?
+            || running.host_gid()? != self.host_gid()?
+            || running.values.get("username") != self.values.get("username")
+            || running.get("name")? != self.get("name")?
+        {
             return Err("running profile belongs to a different sandbox or owner".into());
         }
         Ok(())
+    }
+
+    fn check_host_identity(&self, recorded: &str) -> Result<()> {
+        if recorded != self.host_identity()? {
+            return Err(
+                "host account IDs changed; stop and restart this instance before joining".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn host_identity(&self) -> Result<String> {
+        Ok(format!("{}\t{}\n", self.host_uid()?, self.host_gid()?))
+    }
+
+    pub fn owner_key(&self) -> Result<String> {
+        Ok(owner_key(self.get("username")?))
+    }
+
+    pub fn supervisor_runtime(&self, instance: &str) -> Result<PathBuf> {
+        let legacy = Path::new("/run").join(self.machine(instance)?);
+        let declared = self.declared_runtime(instance)?;
+        if !declared.join("profile-root").exists() && legacy.join("profile-root").exists() {
+            return Ok(legacy);
+        }
+        Ok(declared)
+    }
+
+    pub fn declared_runtime(&self, instance: &str) -> Result<PathBuf> {
+        self.machine(instance)?;
+        if !self.values.contains_key("identityVersion") {
+            return Ok(Path::new("/run").join(self.machine(instance)?));
+        }
+        Ok(PathBuf::from(format!(
+            "/run/nook-{}-{}-{instance}",
+            self.owner_key()?,
+            self.get("name")?
+        )))
     }
 
     pub fn guest_working_directory(&self, instance: &str, directory: &Path) -> Result<PathBuf> {
@@ -161,14 +242,25 @@ impl Profile {
     }
 
     pub fn load(dir: &Path) -> Result<Self> {
-        let values = pairs(&dir.join("profile"))?;
+        let mut values = pairs(&dir.join("profile"))?;
+        resolve_owner(&mut values)?;
         let mut mounts = Vec::new();
         for line in lines(&dir.join("mounts"))? {
             let fields: Vec<_> = line.split('\t').collect();
             if fields.len() != 3 || !["ro", "rw", "device", "device-pattern"].contains(&fields[0]) {
                 return Err("invalid mount record".into());
             }
-            safe_mount(fields[1], fields[2])?;
+            let source = fields[1].replace(
+                "@host-runtime@",
+                &format!(
+                    "/run/user/{}",
+                    values
+                        .get("hostUid")
+                        .or_else(|| values.get("uid"))
+                        .ok_or("missing host UID")?
+                ),
+            );
+            safe_mount(&source, fields[2])?;
             if fields[0] == "device-pattern" {
                 let name = fields[1]
                     .strip_prefix("/dev/")
@@ -182,7 +274,7 @@ impl Profile {
             }
             mounts.push(Mount {
                 mode: fields[0].into(),
-                source: fields[1].into(),
+                source,
                 target: fields[2].into(),
             });
         }
@@ -201,8 +293,16 @@ impl Profile {
         for name in ["uid", "gid"] {
             let _: u32 = p.get(name)?.parse()?;
         }
-        if p.uid()? == 0 || p.uid()? >= 100000 || p.gid()? == 0 || p.gid()? >= 100000 {
-            return Err("sandbox owner UID/GID must be between 1 and 99999".into());
+        if p.host_uid()? == 0
+            || p.host_gid()? == 0
+            || p.guest_uid()? == 0
+            || p.guest_uid()? >= 100000
+            || p.guest_gid()? == 0
+            || p.guest_gid()? >= 100000
+        {
+            return Err(
+                "owner IDs must be non-root; guest UID/GID must be between 1 and 99999".into(),
+            );
         }
         for key in p.environment.keys() {
             if !key
@@ -233,10 +333,26 @@ impl Profile {
     pub fn flag(&self, key: &str) -> bool {
         self.values.get(key).is_some_and(|x| x == "1")
     }
-    pub fn uid(&self) -> Result<u32> {
+    pub fn host_uid(&self) -> Result<u32> {
+        Ok(self
+            .values
+            .get("hostUid")
+            .map(String::as_str)
+            .unwrap_or(self.get("uid")?)
+            .parse()?)
+    }
+    pub fn host_gid(&self) -> Result<u32> {
+        Ok(self
+            .values
+            .get("hostGid")
+            .map(String::as_str)
+            .unwrap_or(self.get("gid")?)
+            .parse()?)
+    }
+    pub fn guest_uid(&self) -> Result<u32> {
         Ok(self.get("uid")?.parse()?)
     }
-    pub fn gid(&self) -> Result<u32> {
+    pub fn guest_gid(&self) -> Result<u32> {
         Ok(self.get("gid")?.parse()?)
     }
     pub fn machine(&self, instance: &str) -> Result<String> {
@@ -247,24 +363,32 @@ impl Profile {
         }
         Ok(format!(
             "sbx-{}-{}-{}",
-            self.uid()?,
+            self.host_uid()?,
             self.get("name")?,
             instance
         ))
     }
     pub fn unit(&self, instance: &str) -> Result<String> {
         self.machine(instance)?;
+        let legacy_runtime = Path::new("/run").join(self.machine(instance)?);
+        let owner = if !self.values.contains_key("identityVersion")
+            || legacy_runtime.join("profile-root").exists()
+        {
+            self.host_uid()?.to_string()
+        } else {
+            self.owner_key()?
+        };
         Ok(format!(
-            "sandbox-{}-{}@{instance}.service",
-            self.uid()?,
+            "sandbox-{owner}-{}@{instance}.service",
             self.get("name")?
         ))
     }
+
     pub fn runtime(&self, instance: &str) -> Result<PathBuf> {
         self.machine(instance)?;
         Ok(PathBuf::from(format!(
             "/run/user/{}/sandbox/{}/{instance}",
-            self.uid()?,
+            self.host_uid()?,
             self.get("name")?
         )))
     }
@@ -293,6 +417,7 @@ mod tests {
                 ("home".into(), "/home/test".into()),
                 ("name".into(), "dev".into()),
                 ("uid".into(), "1000".into()),
+                ("gid".into(), "100".into()),
                 (
                     "persistent".into(),
                     if persistent { "1" } else { "0" }.into(),
@@ -304,6 +429,52 @@ mod tests {
             system_rules: Vec::new(),
             pasta: Vec::new(),
         }
+    }
+
+    #[test]
+    fn owner_keys_are_unambiguous_unit_components() {
+        assert_eq!(owner_key("alice"), "ualice");
+        assert_eq!(owner_key("a_b.c-d$"), "ua-5fb-2ec-2dd-24");
+        assert_ne!(owner_key("a_b"), owner_key("a-5fb"));
+        assert_ne!(owner_key("Alice"), owner_key("alice"));
+    }
+
+    #[test]
+    fn host_and_guest_credentials_are_independent() {
+        let mut profile = profile(Path::new("/home/test"), true);
+        profile.values.insert("hostUid".into(), "123456".into());
+        profile.values.insert("hostGid".into(), "234567".into());
+        assert_eq!(profile.host_uid().unwrap(), 123456);
+        assert_eq!(profile.host_gid().unwrap(), 234567);
+        assert_eq!(profile.guest_uid().unwrap(), 1000);
+        assert_eq!(profile.guest_gid().unwrap(), 100);
+        assert!(profile.check_host_identity("123456\t234567\n").is_ok());
+        assert!(profile.check_host_identity("1000\t100\n").is_err());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "host account lookup uses NSS")]
+    fn runtime_owner_lookup_ignores_supplied_numeric_credentials() {
+        let user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap();
+        assert!(
+            !user.uid.is_root(),
+            "run credential tests as an ordinary user"
+        );
+        let mut values = BTreeMap::from([
+            ("identityVersion".into(), "2".into()),
+            ("username".into(), user.name),
+            ("hostUid".into(), "0".into()),
+            ("hostGid".into(), "0".into()),
+        ]);
+        resolve_owner(&mut values).unwrap();
+        assert_eq!(values["hostUid"], user.uid.to_string());
+        assert_eq!(values["hostGid"], user.gid.to_string());
+        values.insert("username".into(), "root".into());
+        assert!(resolve_owner(&mut values).is_err());
+        values.insert("username".into(), "nook-test-account-does-not-exist".into());
+        assert!(resolve_owner(&mut values).is_err());
     }
 
     #[test]

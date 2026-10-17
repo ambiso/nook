@@ -6,7 +6,7 @@
   ...
 }:
 let
-  outer = config;
+  ownerKey = import ./owner-key.nix { inherit lib; };
   users = lib.filterAttrs (
     _: user: user.programs.nook.enable && user.programs.nook.sandboxes != { }
   ) config.home-manager.users;
@@ -16,12 +16,13 @@ let
       lib.mapAttrsToList (name: profile: {
         inherit username name profile;
         launcher = user.programs.nook.package;
-        uid = config.users.users.${username}.uid;
-        gid = config.users.groups.${config.users.users.${username}.group}.gid;
+        owner = ownerKey username;
+        # Keep old numeric templates installed during the identity transition.
+        legacyUid = config.users.users.${username}.uid;
       }) user.programs.nook.sandboxes
     ) users
   );
-  unitName = p: "sandbox-${toString p.uid}-${p.name}@";
+  unitName = p: "sandbox-${p.owner}-${p.name}@";
 
 in
 {
@@ -29,59 +30,65 @@ in
   config = {
     home-manager.sharedModules = [
       (import ./home-manager.nix { inherit home-manager; })
-      ({ config, ... }: {
-        programs.nook.host.uid = lib.mkIf (config.programs.nook.enable) (
-          lib.mkDefault outer.users.users.${config.home.username}.uid
-        );
-        programs.nook.host.gid = lib.mkIf (config.programs.nook.enable) (
-          lib.mkDefault outer.users.groups.${outer.users.users.${config.home.username}.group}.gid
-        );
-      })
     ];
     systemd.services = lib.listToAttrs (
-      map (
+      lib.concatMap (
         p:
-        lib.nameValuePair (unitName p) {
-          description = "Sandbox ${p.name} (%i), owned by ${p.username}";
-          # A rebuild publishes the next boot's definition. Running guests keep
-          # their pinned closure until the owner explicitly stops or restarts them.
-          restartIfChanged = false;
-          requires = [ "systemd-machined.service" ];
-          after = [ "systemd-machined.service" ];
-          path = [
-            pkgs.systemd
-            pkgs.coreutils
-            pkgs.util-linux
-            pkgs.iproute2
-            pkgs.passt
-            pkgs.xdg-dbus-proxy
-            pkgs.bubblewrap
-            pkgs.bindfs
-            pkgs.nix
-          ];
-          serviceConfig = {
-            Type = "notify";
-            NotifyAccess = "main";
-            ExecStart = "${p.launcher}/bin/nk --serve ${p.profile._profile} %i";
-            RuntimeDirectory = "sbx-${toString p.uid}-${p.name}-%i";
-            RuntimeDirectoryMode = "0711";
-            StateDirectory = "sandbox/uid-ranges";
-            PrivateMounts = true;
-            Delegate = true;
-            # Leave the delegated root empty so nspawn can enable controllers
-            # for its sibling payload cgroup while helpers stay in supervisor.
-            DelegateSubgroup = "supervisor";
-            KillMode = "mixed";
-            TimeoutStartSec = 120;
-            TimeoutStopSec = 120;
-            Restart = "no";
+        let
+          service = {
+            description = "Sandbox ${p.name} (%i), owned by ${p.username}";
+            # A rebuild publishes the next boot's definition. Running guests keep
+            # their pinned closure until the owner explicitly stops or restarts them.
+            restartIfChanged = false;
+            requires = [ "systemd-machined.service" ];
+            after = [ "systemd-machined.service" ];
+            path = [
+              pkgs.systemd
+              pkgs.coreutils
+              pkgs.util-linux
+              pkgs.iproute2
+              pkgs.passt
+              pkgs.xdg-dbus-proxy
+              pkgs.bubblewrap
+              pkgs.bindfs
+              pkgs.nix
+            ];
+            serviceConfig = {
+              Type = "notify";
+              NotifyAccess = "main";
+              ExecStart = "${p.launcher}/bin/nk --serve ${p.profile._profile} %i";
+              RuntimeDirectory = "nook-${p.owner}-${p.name}-%i";
+              RuntimeDirectoryMode = "0711";
+              StateDirectory = "sandbox/uid-ranges";
+              PrivateMounts = true;
+              Delegate = true;
+              # Leave the delegated root empty so nspawn can enable controllers
+              # for its sibling payload cgroup while helpers stay in supervisor.
+              DelegateSubgroup = "supervisor";
+              KillMode = "mixed";
+              TimeoutStartSec = 120;
+              TimeoutStopSec = 120;
+              Restart = "no";
+            };
           };
-        }
+        in
+        [ (lib.nameValuePair (unitName p) service) ]
+        ++ lib.optional (p.legacyUid != null) (
+          lib.nameValuePair "sandbox-${toString p.legacyUid}-${p.name}@" (
+            service
+            // {
+              environment.NOOK_LEGACY_RUNTIME = "1";
+              serviceConfig = service.serviceConfig // {
+                RuntimeDirectory = "sbx-${toString p.legacyUid}-${p.name}-%i";
+              };
+            }
+          )
+        )
       ) profiles
     );
     environment.etc = lib.listToAttrs (
       map (
-        p: lib.nameValuePair "sandbox/profiles/${toString p.uid}/${p.name}" { source = p.profile._profile; }
+        p: lib.nameValuePair "sandbox/profiles/${p.owner}/${p.name}" { source = p.profile._profile; }
       ) profiles
     );
     security.polkit.enable = lib.mkIf (profiles != [ ]) true;
@@ -115,7 +122,12 @@ in
             var unit = action.lookup("unit");
             var verb = action.lookup("verb");
             if (unit && new RegExp(${
-              builtins.toJSON ("^" + unitName p + "(main|n-[a-z0-9-]{1,24}|e-[a-f0-9]{16})\\.service$")
+              builtins.toJSON (
+                "^sandbox-("
+                + p.owner
+                + lib.optionalString (p.legacyUid != null) ("|" + toString p.legacyUid)
+                + ")-${p.name}@(main|n-[a-z0-9-]{1,24}|e-[a-f0-9]{16})\\.service$"
+              )
             }).test(unit)
                 && (verb === "start" || verb === "stop" || verb === "restart")) return polkit.Result.YES;
           }

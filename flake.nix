@@ -47,6 +47,10 @@
       });
       checks = forAllSystems (system: {
         package = self.packages.${system}.nook;
+        module-identity = import ./tests/module-identity.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+        };
         integration = import ./tests/sandbox-systemd.nix {
           pkgs = pkgsFor system;
           inherit home-manager;

@@ -9,6 +9,7 @@ profile mounts remain shared, but no application is started in the instance.
 import argparse
 import json
 import os
+import pwd
 import secrets
 import shutil
 import statistics
@@ -37,7 +38,7 @@ def timed_launch(launcher, profile, instance):
 
 def measure(launcher, profile, instance):
     started, finished = timed_launch(launcher, profile, instance)
-    unit = f"sandbox-{os.getuid()}-{profile}@{instance}.service"
+    unit = f"sandbox-u{pwd.getpwuid(os.getuid()).pw_name}-{profile}@{instance}.service"
     host = properties(
         run(
             "systemctl",
@@ -131,7 +132,9 @@ def measure(launcher, profile, instance):
 
 def benchmark(launcher, profile, runs):
     instance = "n-bench-" + secrets.token_hex(4)
-    manifest = Path(f"/etc/sandbox/profiles/{os.getuid()}/{profile}/profile")
+    manifest = Path(
+        f"/etc/sandbox/profiles/u{pwd.getpwuid(os.getuid()).pw_name}/{profile}/profile"
+    )
     values = dict(line.split("\t", 1) for line in manifest.read_text().splitlines())
     if values["persistent"] != "1":
         raise ValueError(

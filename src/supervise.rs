@@ -36,9 +36,9 @@ use std::{os::fd::AsFd, sync::Arc};
 // never perform filesystem operations while these credentials are changed.
 fn as_user<T>(profile: &Profile, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     let name = CString::new(profile.get("username")?)?;
-    initgroups(&name, Gid::from_raw(profile.gid()?))?;
-    setegid(Gid::from_raw(profile.gid()?))?;
-    seteuid(Uid::from_raw(profile.uid()?))?;
+    initgroups(&name, Gid::from_raw(profile.host_gid()?))?;
+    setegid(Gid::from_raw(profile.host_gid()?))?;
+    seteuid(Uid::from_raw(profile.host_uid()?))?;
     let result = operation();
     seteuid(Uid::from_raw(0))?;
     setegid(Gid::from_raw(0))?;
@@ -120,9 +120,9 @@ fn user_command(profile: &Profile, exe: &str) -> Result<Command> {
     let mut c = Command::new("setpriv");
     c.args([
         "--reuid",
-        profile.get("uid")?,
+        &profile.host_uid()?.to_string(),
         "--regid",
-        profile.get("gid")?,
+        &profile.host_gid()?.to_string(),
         "--init-groups",
         "--",
         exe,
@@ -166,7 +166,7 @@ fn proxy(
         // /run at their usual paths makes the portal wrongly skip document
         // export for files that the guest cannot actually reach.
         cmd.args(["--ro-bind", "/nix/store", "/nix/store", "--ro-bind"])
-            .arg(format!("/run/user/{}/bus", profile.uid()?))
+            .arg(format!("/run/user/{}/bus", profile.host_uid()?))
             .arg("/host-bus")
             .arg("--bind")
             .arg(directory)
@@ -187,7 +187,7 @@ fn proxy(
     } else if system {
         "unix:path=/run/dbus/system_bus_socket".into()
     } else {
-        format!("unix:path=/run/user/{}/bus", profile.uid()?)
+        format!("unix:path=/run/user/{}/bus", profile.host_uid()?)
     };
     cmd.arg(upstream)
         .arg(if portal_metadata.is_some() {
@@ -224,8 +224,10 @@ fn prepare_portals(
         profile.get("portalAppId")?,
         instance.replace('-', "_")
     );
-    let metadata_directory =
-        PathBuf::from(format!("/run/user/{}/.flatpak/{machine}", profile.uid()?));
+    let metadata_directory = PathBuf::from(format!(
+        "/run/user/{}/.flatpak/{machine}",
+        profile.host_uid()?
+    ));
     let metadata = metadata_directory.join("info");
     as_user(profile, || {
         fs::create_dir_all(&metadata_directory)?;
@@ -242,9 +244,11 @@ fn prepare_portals(
         )?;
         Ok(())
     })?;
-    helpers
-        .cleanup
-        .push((profile.uid()?, profile.gid()?, metadata_directory.clone()));
+    helpers.cleanup.push((
+        profile.host_uid()?,
+        profile.host_gid()?,
+        metadata_directory.clone(),
+    ));
 
     let user_runtime = profile.runtime(instance)?;
     let socket = proxy(
@@ -266,9 +270,12 @@ fn prepare_portals(
         .arg("--document-mountpoint")
         .env(
             "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path=/run/user/{}/bus", profile.uid()?),
+            format!("unix:path=/run/user/{}/bus", profile.host_uid()?),
         )
-        .env("XDG_RUNTIME_DIR", format!("/run/user/{}", profile.uid()?))
+        .env(
+            "XDG_RUNTIME_DIR",
+            format!("/run/user/{}", profile.host_uid()?),
+        )
         .output()?;
     if !output.status.success() {
         return Err(format!(
@@ -295,8 +302,8 @@ fn prepare_portals(
     let options = format!(
         "fd={},rootmode=40700,user_id={},group_id={},allow_other,default_permissions",
         fuse.as_raw_fd(),
-        profile.uid()?,
-        profile.gid()?
+        profile.host_uid()?,
+        profile.host_gid()?
     );
     nix::mount::mount(
         Some("sandbox-documents"),
@@ -309,8 +316,8 @@ fn prepare_portals(
     bindfs
         .args([
             "-f",
-            &format!("--force-user={}", uid_offset + profile.uid()?),
-            &format!("--force-group={}", uid_offset + profile.gid()?),
+            &format!("--force-user={}", uid_offset + profile.guest_uid()?),
+            &format!("--force-group={}", uid_offset + profile.guest_gid()?),
             "--chown-deny",
             "--chmod-deny",
             "--direct-io",
@@ -326,6 +333,19 @@ fn prepare_portals(
     fs::metadata(&destination)?;
     Ok((socket, destination))
 }
+// mount(8)'s triples describe the on-disk ID, the ID visible to nspawn,
+// and the range length. Host and guest owners need not have the same number.
+fn owner_id_mappings(owner: u32, guest: u32, offset: u32) -> Result<[(u32, u32, u32); 3]> {
+    if owner == 0 || guest == 0 || guest >= 100000 || (offset..offset + 262144).contains(&owner) {
+        return Err("owner IDs conflict with the instance's subordinate range".into());
+    }
+    Ok([
+        (owner, offset + guest, 1),
+        (offset, offset, guest),
+        (offset + guest + 1, offset + guest + 1, 262144 - guest - 1),
+    ])
+}
+
 fn stage_mount(
     profile: &Profile,
     root: &Path,
@@ -348,7 +368,7 @@ fn stage_mount(
         fs::create_dir_all(destination.parent().ok_or("missing parent")?)?;
         File::create(&destination)?;
     }
-    own(&destination, profile.uid()?, profile.gid()?)?;
+    own(&destination, profile.host_uid()?, profile.host_gid()?)?;
     let pinned = stage.join(index.to_string());
     if directory {
         fs::create_dir_all(&pinned)?;
@@ -358,20 +378,18 @@ fn stage_mount(
     inherit(&file)?;
     let mut mount = Command::new("mount");
     mount.arg("--bind");
-    if bind.mode == "device" || file.metadata()?.uid() == profile.uid()? {
+    if bind.mode == "device" || file.metadata()?.uid() == profile.host_uid()? {
         // Expose the host owner's IDs as the guest owner, and preserve this
         // instance's disjoint high IDs for guest root, system services and
         // Podman. All other low host IDs, especially host root, stay unmapped.
         // Split the high range around the owner to avoid overlapping mappings.
-        for (option, owner) in [
-            ("--map-users", profile.uid()?),
-            ("--map-groups", profile.gid()?),
+        for (option, owner, guest) in [
+            ("--map-users", profile.host_uid()?, profile.guest_uid()?),
+            ("--map-groups", profile.host_gid()?, profile.guest_gid()?),
         ] {
-            mount.arg(format!("{option}={owner}:{}:1", uid_offset + owner));
-            mount.arg(format!("{option}={uid_offset}:{uid_offset}:{owner}"));
-            let remainder = 262144 - owner - 1;
-            let start = uid_offset + owner + 1;
-            mount.arg(format!("{option}={start}:{start}:{remainder}"));
+            for (disk, mapped, count) in owner_id_mappings(owner, guest, uid_offset)? {
+                mount.arg(format!("{option}={disk}:{mapped}:{count}"));
+            }
         }
     }
     command_ok(
@@ -534,7 +552,7 @@ fn clone_devices(profile: &Profile, source: &Path, destination: &Path, depth: us
                 actual.rdev(),
             )?;
         }
-        own(destination, profile.uid()?, profile.gid()?)?;
+        own(destination, profile.host_uid()?, profile.host_gid()?)?;
         fs::set_permissions(destination, fs::Permissions::from_mode(0o600))?;
     } else {
         return Err("only character devices and device directories can be forwarded".into());
@@ -614,16 +632,30 @@ struct Allocation {
     uid_offset: u32,
     _lock: File,
     transient: bool,
+    path: PathBuf,
 }
 impl Drop for Allocation {
     fn drop(&mut self) {
         if self.transient {
-            let _ = fs::remove_file(format!("/var/lib/sandbox/uid-ranges/{}", self.uid_offset));
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
-fn uid_range(machine: &str, transient: bool) -> Result<Allocation> {
-    let directory = Path::new("/var/lib/sandbox/uid-ranges");
+fn uid_range(machine: &str, legacy_machine: &str, transient: bool) -> Result<Allocation> {
+    uid_range_at(
+        Path::new("/var/lib/sandbox/uid-ranges"),
+        machine,
+        legacy_machine,
+        transient,
+    )
+}
+
+fn uid_range_at(
+    directory: &Path,
+    machine: &str,
+    legacy_machine: &str,
+    transient: bool,
+) -> Result<Allocation> {
     fs::create_dir_all(directory)?;
     let allocator = OpenOptions::new()
         .read(true)
@@ -636,20 +668,37 @@ fn uid_range(machine: &str, transient: bool) -> Result<Allocation> {
     // Reservations are root-owned and serialized across all profile services.
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_name() == ".lock" {
+        if entry.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
-        if fs::read_to_string(entry.path())? == machine {
+        let reservation = fs::read_to_string(entry.path())?;
+        if reservation == machine || reservation == legacy_machine {
             let uid_offset = entry.file_name().to_string_lossy().parse()?;
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(entry.path())?;
             file.try_lock()?;
+            let file = if reservation != machine {
+                // Preserve the old record if a migration is interrupted. Lock
+                // the replacement before publishing it so no other supervisor
+                // can acquire this range through the new inode.
+                use std::io::Write;
+                let mut replacement = tempfile::NamedTempFile::new_in(directory)?;
+                replacement.as_file().try_lock()?;
+                replacement.write_all(machine.as_bytes())?;
+                replacement.as_file().sync_all()?;
+                let updated = replacement.persist(entry.path())?;
+                File::open(directory)?.sync_all()?;
+                updated
+            } else {
+                file
+            };
             return Ok(Allocation {
                 uid_offset,
                 _lock: file,
                 transient,
+                path: entry.path(),
             });
         }
     }
@@ -663,7 +712,7 @@ fn uid_range(machine: &str, transient: bool) -> Result<Allocation> {
             .read(true)
             .write(true)
             .create_new(true)
-            .open(path)
+            .open(&path)
         {
             Ok(mut file) => {
                 use std::io::Write;
@@ -673,6 +722,7 @@ fn uid_range(machine: &str, transient: bool) -> Result<Allocation> {
                     uid_offset,
                     _lock: file,
                     transient,
+                    path,
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -755,10 +805,23 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         None
     };
     let machine = profile.machine(instance)?;
-    let runtime = PathBuf::from(format!("/run/{machine}"));
+    let runtime = if std::env::var_os("NOOK_LEGACY_RUNTIME").is_some() {
+        PathBuf::from(format!("/run/{machine}"))
+    } else {
+        profile.declared_runtime(instance)?
+    };
     if !runtime.is_dir() {
         return Err("missing systemd RuntimeDirectory".into());
     }
+    let persistent_home = profile.persistent_home(instance)?;
+    let reservation_key = format!(
+        "nook-{}-{}-{instance}",
+        profile.owner_key()?,
+        profile.get("name")?
+    );
+    let allocation = uid_range(&reservation_key, &machine, persistent_home.is_none())?;
+    let uid_offset = allocation.uid_offset;
+    fs::write(runtime.join("host-identity"), profile.host_identity()?)?;
     // A running instance may outlive the host generation that declared it.
     // Keep its complete guest/profile closure alive until systemd removes the
     // runtime directory, including when the supervisor is forcibly killed.
@@ -789,7 +852,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     // container user before nspawn applies its private user namespace mapping.
     let home = root.join(profile.get("home")?.trim_start_matches('/'));
     fs::create_dir_all(&home)?;
-    own(&home, profile.uid()?, profile.gid()?)?;
+    own(&home, profile.guest_uid()?, profile.guest_gid()?)?;
     let user_runtime = profile.runtime(instance)?;
     let wayland = as_user(profile, || {
         Ok(fs::read_to_string(user_runtime.join("wayland"))?)
@@ -801,9 +864,6 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     {
         return Err("invalid Wayland socket name".into());
     }
-    let persistent_home = profile.persistent_home(instance)?;
-    let allocation = uid_range(&machine, persistent_home.is_none())?;
-    let uid_offset = allocation.uid_offset;
     let mut helpers = Helpers {
         children: vec![],
         latches: vec![],
@@ -867,19 +927,19 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     if !wayland.is_empty() {
         mounts.push(Mount {
             mode: "ro".into(),
-            source: format!("/run/user/{}/{wayland}", profile.uid()?),
+            source: format!("/run/user/{}/{wayland}", profile.host_uid()?),
             target: "/run/host/wayland".into(),
         });
     }
     for (flag, source, target) in [
         (
             "audio",
-            format!("/run/user/{}/pipewire-0", profile.uid()?),
+            format!("/run/user/{}/pipewire-0", profile.host_uid()?),
             "/run/host/pipewire".into(),
         ),
         (
             "audio",
-            format!("/run/user/{}/pulse/native", profile.uid()?),
+            format!("/run/user/{}/pulse/native", profile.host_uid()?),
             "/run/host/pulse".into(),
         ),
     ] {
@@ -1191,6 +1251,8 @@ pub fn nix_proxy(socket: &str, target: &str) -> Result<i32> {
 }
 #[cfg(test)]
 mod tests {
+    use super::{owner_id_mappings, uid_range_at};
+
     #[test]
     fn nested_mountpoint_creation_cannot_follow_symlinks() {
         use super::create_mountpoint_beneath;
@@ -1211,6 +1273,57 @@ mod tests {
             fs::read_to_string(outside.path().join("existing")).unwrap(),
             "keep this content"
         );
+    }
+
+    #[test]
+    fn owner_mapping_translates_different_ids_and_preserves_podman_ids() {
+        let offset = 0x40000000;
+        for (owner, guest) in [(4242, 1000), (4343, 100), (123456, 2345)] {
+            let mappings = owner_id_mappings(owner, guest, offset).unwrap();
+            let translate = |id| {
+                mappings.iter().find_map(|&(disk, mapped, count)| {
+                    (disk..disk + count)
+                        .contains(&id)
+                        .then(|| mapped + id - disk)
+                })
+            };
+            assert_eq!(translate(owner), Some(offset + guest));
+            assert_eq!(translate(0), None);
+            assert_eq!(translate(owner + 1), None);
+            assert_eq!(translate(offset), Some(offset));
+            assert_eq!(translate(offset + guest), None);
+            assert_eq!(translate(offset + 100000), Some(offset + 100000));
+        }
+        assert!(owner_id_mappings(0, 1000, offset).is_err());
+        assert!(owner_id_mappings(offset + 1000, 1000, offset).is_err());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "reservation migration uses OS file locks")]
+    fn legacy_reservations_are_adopted_only_after_the_old_supervisor_exits() {
+        use std::fs;
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = "sbx-4242-dev-main";
+        let stable = "nook-ualice-dev-main";
+        let old = uid_range_at(directory.path(), legacy, legacy, false).unwrap();
+        let offset = old.uid_offset;
+        assert!(uid_range_at(directory.path(), stable, legacy, false).is_err());
+        assert_eq!(
+            fs::read_to_string(directory.path().join(offset.to_string())).unwrap(),
+            legacy
+        );
+        drop(old);
+        let migrated = uid_range_at(directory.path(), stable, legacy, false).unwrap();
+        assert_eq!(migrated.uid_offset, offset);
+        assert_eq!(
+            fs::read_to_string(directory.path().join(offset.to_string())).unwrap(),
+            stable
+        );
+        assert!(uid_range_at(directory.path(), stable, legacy, false).is_err());
+        drop(migrated);
+        // A later change to the host UID must still find the same range.
+        let restarted = uid_range_at(directory.path(), stable, "sbx-5252-dev-main", false).unwrap();
+        assert_eq!(restarted.uid_offset, offset);
     }
 
     #[test]

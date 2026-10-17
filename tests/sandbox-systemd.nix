@@ -179,9 +179,27 @@ pkgs.testers.runNixOSTest {
       linger = true;
       extraGroups = pkgs.lib.optional benchmark "systemd-journal";
     };
+    # Exercise account allocation at activation: neither ID exists in the Nix
+    # configuration, and this owner's IDs differ from the guest's 1000/100.
+    users.groups.bob = { };
     users.users.bob = {
       isNormalUser = true;
-      uid = 1001;
+      group = "bob";
+      linger = true;
+    };
+    home-manager.users.bob = {
+      home.stateVersion = "26.05";
+      programs.nook = {
+        enable = true;
+        sandboxes.dev = {
+          shell = pkgs.bashInteractive;
+          gpu = false;
+          audio = false;
+          network = false;
+          hostSessionBus = false;
+          inheritAppearance = false;
+        };
+      };
     };
     systemd.services.test-device = {
       wantedBy = [ "multi-user.target" ];

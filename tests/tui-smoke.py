@@ -4,6 +4,7 @@
 import fcntl
 import json
 import os
+import pwd
 from pathlib import Path
 import pty
 import re
@@ -71,8 +72,10 @@ def main():
             (state / "instances/n-saved/home").mkdir(parents=True)
             values = {
                 "name": name,
-                "uid": os.getuid(),
-                "gid": os.getgid(),
+                "identityVersion": 2,
+                "username": pwd.getpwuid(os.getuid()).pw_name,
+                "uid": 2345,
+                "gid": 2346,
                 "home": str(Path.home()),
                 "state": state,
                 "persistent": 1,
@@ -140,12 +143,31 @@ def main():
                 assert "omit --join" in result.stderr, result.stderr
                 assert not started.exists()
                 assert not (runtime / names[0]).exists()
+            missing = subprocess.run(
+                [
+                    str(binary),
+                    "--profiles",
+                    str(profiles),
+                    "launch",
+                    names[0],
+                    "--",
+                    "true",
+                ],
+                env=environment | {"NOOK_SMOKE_STATE": "not-found"},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert (
+                missing.returncode == 1
+                and "nook.nixosModules.default" in missing.stderr
+            ), missing.stderr
             for actions, name, instance in cases:
                 started.unlink(missing_ok=True)
                 assert select_instance(binary, profiles, environment, actions) == 1
                 unit = json.loads(started.read_text())[0]
                 assert re.fullmatch(
-                    rf"sandbox-{os.getuid()}-{re.escape(name)}@{instance}\.service",
+                    rf"sandbox-u{pwd.getpwuid(os.getuid()).pw_name}-{re.escape(name)}@{instance}\.service",
                     unit,
                 ), unit
             assert select_instance(binary, profiles, environment, [("Nook", b"q")]) == 0

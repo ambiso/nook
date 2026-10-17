@@ -20,8 +20,9 @@ use std::{
 #[derive(Parser)]
 #[command(name = "nk", about = "Nook: native systemd sandboxes", version)]
 struct Cli {
-    #[arg(long, env = "NOOK_PROFILES", default_value_os_t = default_profiles())]
-    profiles: PathBuf,
+    /// Profile catalog; defaults to the current owner's installed profiles
+    #[arg(long, env = "NOOK_PROFILES")]
+    profiles: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Action>,
     // Only installed system services invoke these entry points. The supervisor
@@ -170,7 +171,14 @@ fn confirm_deletion(
 fn default_profiles() -> PathBuf {
     // Module-generated wrappers select their own catalog. A bare packaged nk
     // instead discovers this owner's profiles in the installed host registry.
-    PathBuf::from(format!("/etc/sandbox/profiles/{}", nix::unistd::getuid()))
+    match nix::unistd::User::from_uid(nix::unistd::getuid()) {
+        Ok(Some(user)) => {
+            PathBuf::from("/etc/sandbox/profiles").join(config::owner_key(&user.name))
+        }
+        // Return an absent path so catalog loading reports failure, never a
+        // different user's profiles or a caller-controlled environment name.
+        _ => PathBuf::from("/etc/sandbox/profiles/.unknown-account"),
+    }
 }
 
 fn parse_instance(value: &str) -> std::result::Result<String, String> {
@@ -294,11 +302,24 @@ fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> R
     selection.write_all(wayland.as_bytes())?;
     selection.persist(runtime.join("wayland"))?;
     if !control_instance(profile, instance, "start")?.success() {
-        return Err(format!(
-            "sandbox startup failed; inspect journalctl -u {}",
-            profile.unit(instance)?
-        )
-        .into());
+        let unit = profile.unit(instance)?;
+        // Query only on failure: ordinary starts need no extra bus round trip.
+        // Home Manager can install nk without installing its host services.
+        let state = Command::new("systemctl")
+            .args(["show", "--property=LoadState", "--value", &unit])
+            .output()?;
+        if state.status.success() && String::from_utf8_lossy(&state.stdout).trim() == "not-found" {
+            return Err(format!(
+                concat!(
+                    "no matching host service: {}\n\n",
+                    "Rebuild NixOS with nook.nixosModules.default and this user's profiles enabled.\n",
+                    "If the module is already imported, check that NixOS and Home Manager ",
+                    "use the same Nook version and configuration.\n",
+                    "Running home-manager switch alone does not install host services."
+                ), unit
+            ).into());
+        }
+        return Err(format!("sandbox startup failed; inspect journalctl -u {unit}").into());
     }
     Ok(())
 }
@@ -381,12 +402,12 @@ fn enter_instance(
         return Err("entry helper requires polkit authorization".into());
     }
     let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
-    if caller != profile.uid()? {
+    if caller != profile.host_uid()? {
         return Err("caller does not own this sandbox profile".into());
     }
     let registered = PathBuf::from(format!(
         "/etc/sandbox/profiles/{}/{}",
-        caller,
+        profile.owner_key()?,
         profile.get("name")?
     ));
     let declared = fs::canonicalize(registered)?;
@@ -468,12 +489,15 @@ fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
         // Loaded units disappear after shutdown or a host reboot. The saved
         // homes are the durable catalog for named instances.
         let mut instances: BTreeSet<String> = profile.saved_instances()?.into_iter().collect();
-        let prefix = format!("sandbox-{}-{}@", profile.uid()?, profile.get("name")?);
+        let prefixes = [
+            format!("sandbox-{}-{}@", profile.owner_key()?, profile.get("name")?),
+            format!("sandbox-{}-{}@", profile.host_uid()?, profile.get("name")?),
+        ];
         for line in units.lines() {
             let instance = line
                 .split_whitespace()
                 .next()
-                .and_then(|unit| unit.strip_prefix(&prefix))
+                .and_then(|unit| prefixes.iter().find_map(|prefix| unit.strip_prefix(prefix)))
                 .and_then(|unit| unit.strip_suffix(".service"));
             if let Some(instance) = instance
                 && instance != "main"
@@ -528,7 +552,7 @@ fn run() -> Result<i32> {
     if cli.document_mountpoint {
         return portal::document_mountpoint();
     }
-    let profiles = catalog(&cli.profiles)?;
+    let profiles = catalog(&cli.profiles.unwrap_or_else(default_profiles))?;
     let Some(action) = cli.command else {
         return match tui::select(&profiles)? {
             Some(choice) => launch(

@@ -15,7 +15,7 @@ use std::{
 };
 
 pub fn lock_instance(profile: &Profile, instance: &str) -> Result<Flock<File>> {
-    if nix::unistd::geteuid().as_raw() != profile.uid()? {
+    if nix::unistd::geteuid().as_raw() != profile.host_uid()? {
         return Err("instance storage must be managed as its host owner".into());
     }
     profile.machine(instance)?;
@@ -48,7 +48,7 @@ impl SavedInstance {
         if !instance.starts_with("n-") || !crate::config::valid_instance(instance) {
             return Err("only named persistent instances can be deleted; ephemeral homes disappear on stop, and main belongs to its profile".into());
         }
-        if nix::unistd::geteuid().as_raw() != profile.uid()? {
+        if nix::unistd::geteuid().as_raw() != profile.host_uid()? {
             return Err("instance storage must be managed as its host owner".into());
         }
         // The configured state directory may itself be a deliberate host

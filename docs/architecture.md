@@ -41,7 +41,8 @@ argument for configuration that needs to identify its template.
 `nook.homeManagerModules.default` is also exported for standalone Home Manager
 use. It can generate profiles and launchers, but cannot install the privileged
 host services by itself. Normal NixOS installations should use the NixOS module,
-which also derives the owner's numeric UID and GID from the host user.
+which installs each owner's profiles by username. Host numeric IDs are resolved
+at launch, so NixOS may assign them automatically during activation.
 
 The flake exports a launcher package, app, development shell, and optional
 `overlays.default`. An overlay is not required. `programs.nook.package` can
@@ -57,7 +58,7 @@ named, and ephemeral instances reuse that description, each with a separate home
 | --- | --- | --- |
 | Main, default | `~/.sandbox/<profile>/home` | Survives shutdown |
 | Named | `~/.sandbox/<profile>/instances/n-<name>/home` | Survives shutdown |
-| Ephemeral | Beneath `/run/sbx-<uid>-<profile>-<instance>/image/root` | Deleted at shutdown |
+| Ephemeral | Beneath `/run/nook-<owner-key>-<profile>-<instance>/image/root` | Deleted at shutdown |
 
 `persistent = false` makes the main home temporary. Explicitly named homes
 always persist. Ephemeral roots and homes use the host's `/run` tmpfs, which can
@@ -192,13 +193,13 @@ Guests use the host timezone through nspawn's automatic setup.
 
 ```sh
 nk list
-systemctl status sandbox-1000-dev@main.service
-journalctl -u sandbox-1000-dev@main.service
+systemctl status sandbox-uambiso-dev@main.service
+journalctl -u sandbox-uambiso-dev@main.service
 machinectl list
 nk launch dev -- systemctl --user status
 ```
 
-The host unit is `sandbox-<uid>-<profile>@<instance>.service`; the registered
+The host unit is `sandbox-<owner-key>-<profile>@<instance>.service`; the registered
 machine is `sbx-<uid>-<profile>-<instance>`. Activation output is copied into the
 host unit's journal so errors remain available when a failed guest root is
 removed.
@@ -225,3 +226,30 @@ conflicting files beside their originals with a `.pre-systemd` suffix. This
 migration is enabled only for a home carrying `.hm-generation` without a native
 Home Manager GC root; later activations retain normal collision checks. Stop any
 legacy launcher using a home before starting its native instance.
+
+## Owner and guest identities
+
+The configured owner is a host username, resolved through the host account
+database at launch. Numeric host IDs are not part of the guest derivation.
+`programs.nook.guest.uid` and `.gid` default to 1000 and 100; these are the IDs
+inside the guest. Owner-mapped mounts translate the host account to those guest
+IDs while preserving each instance's separate subordinate range. Host root is
+not included in that mapping.
+
+The catalog is `/etc/sandbox/profiles/<owner-key>`. An owner key starts with `u`,
+then the username with every byte except lowercase ASCII letters and digits
+escaped as `-xx` hexadecimal: `alice` becomes `ualice`, while `a_b` becomes
+`ua-5fb`. Escaping hyphens too prevents collisions. No UID is needed to evaluate
+these paths or service definitions.
+
+The privileged supervisor records its resolved host UID/GID in root-owned
+runtime state. Entry checks the current account against this record and refuses
+to join after an account ID change. Existing numeric service templates remain
+installed for explicitly numbered accounts during migration. The launcher can
+join their pinned profiles, and stopped persistent instances adopt their old
+subordinate-range reservation without changing file ownership. Registered
+machine names retain their numeric host UID for compatibility.
+
+A bind source may start with `@host-runtime@/`, expanded by the launcher to the
+owner's `/run/user/<host-uid>/`. The target remains an explicit guest path. This
+allows sharing a particular runtime socket without putting a host UID in Nix.

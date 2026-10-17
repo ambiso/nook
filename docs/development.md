@@ -30,6 +30,15 @@ the CLI/TUI smoke checks, and a bind-mount refusal check in a nested user/mount
 namespace. Six Linux-specific tests were excluded from Miri and passed natively.
 The VM deletion regression has only been evaluated.
 
+The runtime host-identity change passed 27 native tests, 19 Miri tests, Clippy,
+and the CLI/TUI and deletion checks. Two additional tests (NSS account lookup
+and reservation migration locks) are marked unsupported under Miri and passed
+natively. The entry-helper fixture runs as namespace root inside bubblewrap;
+it checks the running generation, caller ownership, and pinned host UID/GID
+without invoking a real host service. Module checks cover automatic UID/GID
+allocation and migration errors for removed host-ID overrides. The expanded
+VM regression has only been evaluated.
+
 ## Rust checks
 
 Run these commands from the repository root inside a development sandbox:
@@ -43,6 +52,7 @@ cargo deny --locked check licenses
 cargo build --locked
 python3 tests/tui-smoke.py target/debug/nk
 python3 tests/delete-mount-smoke.py target/debug/nk
+python3 tests/entry-identity-smoke.py target/debug/nk
 ```
 
 `nix develop` provides build tools; it does not itself isolate execution from
@@ -76,7 +86,8 @@ TMPDIR=/tmp MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-env-forward=TMPDIR" rustu
 
 Filesystem access is needed for the temporary-directory tests. The skipped
 tests use Linux `openat`, `openat2`, directory iteration, or file locks that Miri
-does not implement; they run in the native test suite instead.
+does not implement; they run in the native test suite instead. NSS lookup and
+reservation migration also have Miri-specific ignores and run natively.
 Use a stable `TMPDIR` when building Miri artifacts. If cached
 artifacts retain a deleted directory from an earlier Nix shell, rerun with a
 fresh `CARGO_TARGET_DIR`.

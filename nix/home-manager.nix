@@ -12,7 +12,10 @@ let
   launcher = outer.package;
   mountType = types.submodule {
     options = {
-      source = lib.mkOption { type = types.str; };
+      source = lib.mkOption {
+        type = types.str;
+        description = "Absolute host path; @host-runtime@/ expands to the owner's runtime directory at launch.";
+      };
       target = lib.mkOption { type = types.str; };
       readOnly = lib.mkOption {
         type = types.bool;
@@ -37,8 +40,8 @@ let
       shell = builtins.baseNameOf (lib.getExe shellPackage);
       home = homeConfig.home.homeDirectory;
       username = homeConfig.home.username;
-      uid = outer.host.uid;
-      gid = outer.host.gid;
+      uid = outer.guest.uid;
+      gid = outer.guest.gid;
       hm =
         if cfg.homeManagerModules == [ ] then
           null
@@ -225,6 +228,7 @@ let
           uid
           gid
           ;
+        identityVersion = 2;
         shell = "${appPackage}/bin/${shell}";
         gui =
           if cfg.guiEntryPoint == null then "" else "${appPackage}/${lib.removePrefix "/" cfg.guiEntryPoint}";
@@ -539,6 +543,19 @@ let
       '';
 in
 {
+  imports =
+    map
+      (
+        id:
+        lib.mkRemovedOptionModule [ "programs" "nook" "host" id ] ''
+          Host account IDs are now resolved at launch. Remove this setting, including
+          mkForce overrides. To change IDs inside the guest, use programs.nook.guest.${id}.
+        ''
+      )
+      [
+        "uid"
+        "gid"
+      ];
   options.programs.nook = {
     enable = lib.mkEnableOption "Nook sandbox profiles and launchers";
     package = lib.mkOption {
@@ -557,13 +574,15 @@ in
       default = { };
       description = "Module applied to every sandbox. Use mkDefault for scalar defaults that individual profiles may override.";
     };
-    host.uid = lib.mkOption {
-      type = types.ints.positive;
+    guest.uid = lib.mkOption {
+      type = types.ints.between 1 99999;
       default = 1000;
+      description = "User ID inside the guest, independent of the host account.";
     };
-    host.gid = lib.mkOption {
-      type = types.ints.positive;
+    guest.gid = lib.mkOption {
+      type = types.ints.between 1 99999;
       default = 100;
+      description = "Primary group ID inside the guest, independent of the host account.";
     };
     profiles = lib.mkOption {
       type = types.package;

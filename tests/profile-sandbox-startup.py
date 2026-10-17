@@ -92,7 +92,7 @@ def sample(profile, markers=False):
     if markers:
         trace_marker.write_text(f"SANDBOX_READY {profile}\n")
 
-    unit = f"sandbox-1000-{profile}@{INSTANCE}.service"
+    unit = f"sandbox-ualice-{profile}@{INSTANCE}.service"
     machine = f"sbx-1000-{profile}-{INSTANCE}"
     host = properties(
         run(
