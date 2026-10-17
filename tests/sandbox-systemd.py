@@ -477,7 +477,7 @@ for desktop_id, query in [
     inside("test -e ~/tui-created", "--name from-tui")
     machine.fail(launcher("delete check --name from-tui --yes"))
     cli("stop check --name from-tui")
-    machine.fail(launcher("delete check --name from-tui"))
+    machine.fail(launcher("delete check --name from-tui </dev/null"))
     cli("delete check --name from-tui --yes")
     assert "check\tn-from-tui\t" not in cli("list")
     machine.succeed("test ! -e /home/alice/.sandbox/check/instances/n-from-tui")

@@ -205,7 +205,13 @@ pkgs.testers.runNixOSTest {
     systemd.services.test-device = {
       wantedBy = [ "multi-user.target" ];
       serviceConfig.Type = "oneshot";
-      script = "mknod -m666 /dev/sandbox-test c 1 3";
+      script = ''
+        if [ ! -e /dev/sandbox-test ]; then
+          mknod -m666 /dev/sandbox-test c 1 3
+        fi
+        test -c /dev/sandbox-test
+        test "$(stat -c '%t:%T' /dev/sandbox-test)" = "1:3"
+      '';
     };
     # An explicitly shared child mount beneath a backing home must receive
     # its own owner ID mapping. Instance-private build caches use no such bind.
