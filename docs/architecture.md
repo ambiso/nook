@@ -119,7 +119,8 @@ changes. Existing open handles keep the kernel's usual semantics.
 ## Display, audio, and desktop integration
 
 The selected Wayland socket is forwarded. Host `DISPLAY`, `XAUTHORITY`, and X11
-sockets are excluded. `startX = true` starts a private xwayland-satellite for
+sockets are excluded. `startX = true` starts a private
+[`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite) for
 applications needing X11; guest `:0` refers to that server. Separate network
 namespaces also keep host abstract X11 sockets out of reach.
 

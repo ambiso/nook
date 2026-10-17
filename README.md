@@ -202,7 +202,8 @@ host root. Writable `bindMounts` deliberately grant shared access to their
 sources, including to every named and ephemeral instance of that profile.
 
 Only Wayland is forwarded from the host display. `startX = true` starts a private
-Xwayland satellite inside each instance; the host's X11 sockets are not exposed.
+[`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite) inside
+each instance; the host's X11 sockets are not exposed.
 GPU and audio access are enabled by default and can be disabled with `gpu` and
 `audio`. Other devices are selected with `devices` or `devicePatterns`.
 For hardware-accelerated VMs, the dev example explicitly forwards `/dev/kvm`.
