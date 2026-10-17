@@ -196,6 +196,7 @@ pkgs.testers.runNixOSTest {
           gpu = false;
           audio = false;
           network = false;
+          stateDirectory = ".sandbox/dev";
           hostSessionBus = false;
           inheritAppearance = false;
         };
@@ -283,6 +284,7 @@ pkgs.testers.runNixOSTest {
         environment.SANDBOX_SHARED_MODULE = "applied";
       };
       programs.nook.sandboxes.check = {
+        stateDirectory = ".sandbox/check";
         environment.NOOK_TEST_REVISION = "original";
         imports = [
           { environment.SANDBOX_PROFILE_IMPORT = "applied"; }

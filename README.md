@@ -240,10 +240,14 @@ instance running; stopping an ephemeral instance deletes its home.
 or stop it with `--instance e-…`. `--name project` is shorthand for
 `--instance n-project`.
 
-Homes are stored under `~/.sandbox/<profile>/home` for main instances and
-`~/.sandbox/<profile>/instances/n-<name>/home` for named ones. Ephemeral homes
-live on the host's `/run` tmpfs. Running `nk-dev` from inside dev's backing home
-opens the corresponding guest directory; host symlink aliases work too.
+Homes are stored under `${config.xdg.stateHome}/nook/<profile>/home` for main
+instances and `${config.xdg.stateHome}/nook/<profile>/instances/n-<name>/home`
+for named ones. Home Manager fixes this path when it evaluates the profile, so
+changing the runtime `XDG_STATE_HOME` alone does not move an installed profile's
+state. Set a profile's `stateDirectory` to an absolute path to override it.
+Relative values remain supported under the home directory. Ephemeral homes live
+on the host's `/run` tmpfs. Running `nk-dev` from inside dev's backing home opens
+the corresponding guest directory; host symlink aliases work too.
 GUI entry points also appear in desktop application search.
 
 To remove a named instance, stop it and run `nk delete PROFILE --name NAME`.

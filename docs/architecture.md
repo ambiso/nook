@@ -56,8 +56,8 @@ named, and ephemeral instances reuse that description, each with a separate home
 
 | Instance | Home on the host | Lifetime |
 | --- | --- | --- |
-| Main, default | `~/.sandbox/<profile>/home` | Survives shutdown |
-| Named | `~/.sandbox/<profile>/instances/n-<name>/home` | Survives shutdown |
+| Main, default | `${config.xdg.stateHome}/nook/<profile>/home` | Survives shutdown |
+| Named | `${config.xdg.stateHome}/nook/<profile>/instances/n-<name>/home` | Survives shutdown |
 | Ephemeral | Beneath `/run/nook-<owner-key>-<profile>-<instance>/image/root` | Deleted at shutdown |
 
 `persistent = false` makes the main home temporary. Explicitly named homes
@@ -66,6 +66,12 @@ spill into swap. The guest root is temporary for every instance, including main
 and named ones. Persist system-service data deliberately; a database under
 `/var/lib` will otherwise disappear at shutdown. User services storing data in
 the home naturally follow that home's lifetime.
+
+The default host state root follows Home Manager's `config.xdg.stateHome` at
+profile evaluation time (normally `~/.local/state`). Runtime changes to
+`XDG_STATE_HOME` do not relocate an already installed profile. Profiles can
+override `stateDirectory` with an absolute path; relative overrides remain
+home-relative for compatibility.
 
 Home Manager activates after the native guest user manager is ready. A success
 marker in `~/.local/state/sandbox/home-generation` caches activation by

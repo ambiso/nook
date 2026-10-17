@@ -40,6 +40,11 @@ let
       shell = builtins.baseNameOf (lib.getExe shellPackage);
       home = homeConfig.home.homeDirectory;
       username = homeConfig.home.username;
+      stateRoot =
+        if lib.hasPrefix "/" cfg.stateDirectory then
+          cfg.stateDirectory
+        else
+          "${home}/${cfg.stateDirectory}";
       uid = outer.guest.uid;
       gid = outer.guest.gid;
       hm =
@@ -234,7 +239,7 @@ let
           if cfg.guiEntryPoint == null then "" else "${appPackage}/${lib.removePrefix "/" cfg.guiEntryPoint}";
         entry = entry;
         init = "${container.system.build.toplevel}/init";
-        state = "${home}/${cfg.stateDirectory}";
+        state = stateRoot;
         persistent = if cfg.persistent then 1 else 0;
         network = if cfg.network then 1 else 0;
         podman = if cfg.podman then 1 else 0;
@@ -301,7 +306,13 @@ let
         };
         stateDirectory = lib.mkOption {
           type = types.str;
-          default = ".sandbox/${name}";
+          default = "${homeConfig.xdg.stateHome}/nook/${name}";
+          defaultText = lib.literalExpression ''config.xdg.stateHome + "/nook/${name}"'';
+          description = ''
+            Absolute host directory for this profile's persistent state. The
+            default follows Home Manager's configured xdg.stateHome. Relative
+            values remain supported and are resolved under the home directory.
+          '';
         };
         guiEntryPoint = lib.mkOption {
           type = types.nullOr types.str;
@@ -607,9 +618,12 @@ in
           source = "${wrapper}/share/applications/${desktopFileFor name c}";
         }
       ) (lib.filterAttrs (_: c: c.guiEntryPoint != null) cfg);
-      home.file = lib.concatMapAttrs (_: c: {
-        "${c.stateDirectory}/home/.placeholder".text = "# persistent sandbox home\n";
-      }) cfg;
+      home.file = lib.concatMapAttrs (
+        _: c:
+        lib.optionalAttrs (!(lib.hasPrefix "/" c.stateDirectory)) {
+          "${c.stateDirectory}/home/.placeholder".text = "# persistent sandbox home\n";
+        }
+      ) cfg;
     })
   ];
 }
