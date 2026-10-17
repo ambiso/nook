@@ -65,6 +65,7 @@
               rustc
               rustfmt
               clippy
+              cargo-deny
               pkg-config
               dbus.dev
             ];

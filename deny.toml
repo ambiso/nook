@@ -1,0 +1,14 @@
+[licenses]
+include-dev = true
+include-build = true
+confidence-threshold = 0.95
+
+# Nook uses EUPL-1.2. Dependencies must offer one of these reviewed licenses;
+# new license requirements should fail the check rather than be accepted silently.
+allow = [
+    "EUPL-1.2",
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib", # foldhash, used by ratatui's data structures
+]

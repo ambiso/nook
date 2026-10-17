@@ -2,6 +2,9 @@
 name = "nook"
 version = "0.1.0"
 edition = "2024"
+license = "EUPL-1.2"
+repository = "https://github.com/ambiso/nook"
+description = "NixOS sandboxes managed by systemd, with the nk launcher"
 
 [[bin]]
 name = "nk"
