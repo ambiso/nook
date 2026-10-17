@@ -248,6 +248,8 @@ state. Set a profile's `stateDirectory` to an absolute path to override it.
 Relative values remain supported under the home directory. Ephemeral homes live
 on the host's `/run` tmpfs. Running `nk-dev` from inside dev's backing home opens
 the corresponding guest directory; host symlink aliases work too.
+See [the migration guide](docs/migration-xdg-state.md) before changing existing
+profiles from their previous `~/.sandbox` paths.
 GUI entry points also appear in desktop application search.
 
 To remove a named instance, stop it and run `nk delete PROFILE --name NAME`.

@@ -32,7 +32,7 @@ def inside(script, options=""):
     return cli("launch check " + options + command)
 
 
-with machine.subtest("automatic host UID/GID allocation and independent guest IDs"):
+with subtest("automatic host UID/GID allocation and independent guest IDs"):
     machine.wait_for_unit("home-manager-bob.service")
     host_uid = int(machine.succeed("id -u bob").strip())
     host_gid = int(machine.succeed("id -g bob").strip())
