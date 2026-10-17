@@ -1,0 +1,7 @@
+/target/
+/result*
+/.direnv/
+/.ruff_cache/
+.jj/
+*.qcow2
+__pycache__/
