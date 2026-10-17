@@ -633,10 +633,12 @@ struct Allocation {
     _lock: File,
     transient: bool,
     path: PathBuf,
+    alias: PathBuf,
 }
 impl Drop for Allocation {
     fn drop(&mut self) {
         if self.transient {
+            let _ = fs::remove_file(&self.alias);
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -664,8 +666,40 @@ fn uid_range_at(
         .truncate(false)
         .open(directory.join(".lock"))?;
     allocator.lock()?;
-    // Persistent homes retain their subordinate ownership across restarts.
-    // Reservations are root-owned and serialized across all profile services.
+    // Keep the numeric reservation's contents and lock inode compatible with
+    // older Nook versions, including after a NixOS rollback. A separate hidden
+    // record gives the new username-based identity a stable reference to it.
+    // Older allocators read this record as an unrelated string and ignore it.
+    let alias = directory.join(format!(".owner-{machine}"));
+    let lock_range = |uid_offset: u32| -> Result<Allocation> {
+        if !(0x40000000..0xc0000000).contains(&uid_offset) || !uid_offset.is_multiple_of(262144) {
+            return Err("invalid subordinate-range reservation".into());
+        }
+        let path = directory.join(uid_offset.to_string());
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        file.try_lock()?;
+        Ok(Allocation {
+            uid_offset,
+            _lock: file,
+            transient,
+            path,
+            alias: alias.clone(),
+        })
+    };
+    match fs::read_to_string(&alias) {
+        Ok(offset) => return lock_range(offset.parse()?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    let publish_alias = |offset: u32| -> Result<()> {
+        use std::io::Write;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        write!(temporary, "{offset}")?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(&alias)?;
+        File::open(directory)?.sync_all()?;
+        Ok(())
+    };
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with('.') {
@@ -674,32 +708,9 @@ fn uid_range_at(
         let reservation = fs::read_to_string(entry.path())?;
         if reservation == machine || reservation == legacy_machine {
             let uid_offset = entry.file_name().to_string_lossy().parse()?;
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(entry.path())?;
-            file.try_lock()?;
-            let file = if reservation != machine {
-                // Preserve the old record if a migration is interrupted. Lock
-                // the replacement before publishing it so no other supervisor
-                // can acquire this range through the new inode.
-                use std::io::Write;
-                let mut replacement = tempfile::NamedTempFile::new_in(directory)?;
-                replacement.as_file().try_lock()?;
-                replacement.write_all(machine.as_bytes())?;
-                replacement.as_file().sync_all()?;
-                let updated = replacement.persist(entry.path())?;
-                File::open(directory)?.sync_all()?;
-                updated
-            } else {
-                file
-            };
-            return Ok(Allocation {
-                uid_offset,
-                _lock: file,
-                transient,
-                path: entry.path(),
-            });
+            let allocation = lock_range(uid_offset)?;
+            publish_alias(uid_offset)?;
+            return Ok(allocation);
         }
     }
     let hash = machine
@@ -717,12 +728,15 @@ fn uid_range_at(
             Ok(mut file) => {
                 use std::io::Write;
                 file.try_lock()?;
-                file.write_all(machine.as_bytes())?;
+                file.write_all(legacy_machine.as_bytes())?;
+                file.sync_all()?;
+                publish_alias(uid_offset)?;
                 return Ok(Allocation {
                     uid_offset,
                     _lock: file,
                     transient,
                     path,
+                    alias,
                 });
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1307,6 +1321,9 @@ mod tests {
         let stable = "nook-ualice-dev-main";
         let old = uid_range_at(directory.path(), legacy, legacy, false).unwrap();
         let offset = old.uid_offset;
+        let reservation_path = directory.path().join(offset.to_string());
+        use std::os::unix::fs::MetadataExt;
+        let original_inode = fs::metadata(&reservation_path).unwrap().ino();
         assert!(uid_range_at(directory.path(), stable, legacy, false).is_err());
         assert_eq!(
             fs::read_to_string(directory.path().join(offset.to_string())).unwrap(),
@@ -1316,9 +1333,14 @@ mod tests {
         let migrated = uid_range_at(directory.path(), stable, legacy, false).unwrap();
         assert_eq!(migrated.uid_offset, offset);
         assert_eq!(
-            fs::read_to_string(directory.path().join(offset.to_string())).unwrap(),
-            stable
+            fs::metadata(&reservation_path).unwrap().ino(),
+            original_inode
         );
+        assert_eq!(
+            fs::read_to_string(directory.path().join(offset.to_string())).unwrap(),
+            legacy
+        );
+        assert!(directory.path().join(format!(".owner-{stable}")).exists());
         assert!(uid_range_at(directory.path(), stable, legacy, false).is_err());
         drop(migrated);
         // A later change to the host UID must still find the same range.

@@ -19,6 +19,13 @@ import termios
 import time
 
 
+def owner_key():
+    return "u" + "".join(
+        chr(byte) if 97 <= byte <= 122 or 48 <= byte <= 57 else f"-{byte:02x}"
+        for byte in pwd.getpwuid(os.getuid()).pw_name.encode()
+    )
+
+
 def select_instance(binary, profiles, environment, actions):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
@@ -167,7 +174,7 @@ def main():
                 assert select_instance(binary, profiles, environment, actions) == 1
                 unit = json.loads(started.read_text())[0]
                 assert re.fullmatch(
-                    rf"sandbox-u{pwd.getpwuid(os.getuid()).pw_name}-{re.escape(name)}@{instance}\.service",
+                    rf"sandbox-{owner_key()}-{re.escape(name)}@{instance}\.service",
                     unit,
                 ), unit
             assert select_instance(binary, profiles, environment, [("Nook", b"q")]) == 0

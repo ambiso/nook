@@ -247,7 +247,9 @@ runtime state. Entry checks the current account against this record and refuses
 to join after an account ID change. Existing numeric service templates remain
 installed for explicitly numbered accounts during migration. The launcher can
 join their pinned profiles, and stopped persistent instances adopt their old
-subordinate-range reservation without changing file ownership. Registered
+subordinate-range reservation without changing file ownership. Numeric range
+records and their lock inodes remain compatible with older launchers for NixOS
+rollbacks; a separate root-owned alias records the stable owner identity. Registered
 machine names retain their numeric host UID for compatibility.
 
 A bind source may start with `@host-runtime@/`, expanded by the launcher to the

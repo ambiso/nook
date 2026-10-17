@@ -18,6 +18,13 @@ import time
 from pathlib import Path
 
 
+def owner_key():
+    return "u" + "".join(
+        chr(byte) if 97 <= byte <= 122 or 48 <= byte <= 57 else f"-{byte:02x}"
+        for byte in pwd.getpwuid(os.getuid()).pw_name.encode()
+    )
+
+
 def run(*command):
     return subprocess.run(command, check=True, capture_output=True, text=True).stdout
 
@@ -38,7 +45,7 @@ def timed_launch(launcher, profile, instance):
 
 def measure(launcher, profile, instance):
     started, finished = timed_launch(launcher, profile, instance)
-    unit = f"sandbox-u{pwd.getpwuid(os.getuid()).pw_name}-{profile}@{instance}.service"
+    unit = f"sandbox-{owner_key()}-{profile}@{instance}.service"
     host = properties(
         run(
             "systemctl",
@@ -132,9 +139,7 @@ def measure(launcher, profile, instance):
 
 def benchmark(launcher, profile, runs):
     instance = "n-bench-" + secrets.token_hex(4)
-    manifest = Path(
-        f"/etc/sandbox/profiles/u{pwd.getpwuid(os.getuid()).pw_name}/{profile}/profile"
-    )
+    manifest = Path(f"/etc/sandbox/profiles/{owner_key()}/{profile}/profile")
     values = dict(line.split("\t", 1) for line in manifest.read_text().splitlines())
     if values["persistent"] != "1":
         raise ValueError(
