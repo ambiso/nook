@@ -72,7 +72,7 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 frame.render_stateful_widget(list, list_area, &mut selection);
                 frame.render_widget(
                     Paragraph::new(
-                        "↑/↓ j/k: select   Enter: launch/join   n: named   e: ephemeral   s: stop   q: quit",
+                        "↑/↓ j/k: select   Enter: launch/enter   n: named   e: ephemeral   s: stop   q: quit",
                     )
                     .wrap(Wrap { trim: false }),
                     help_area,

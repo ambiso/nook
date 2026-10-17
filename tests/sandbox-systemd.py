@@ -49,6 +49,9 @@ try:
             "echo 'legacy directory data' > ~/.sandbox/check/home/legacy-directory/original"
         )
     )
+    # Refusing a cold start must leave the service stopped.
+    machine.fail(launcher("launch check --join -- true"))
+    machine.fail("systemctl is-active --quiet sandbox-1000-check@main.service")
     # Concurrent cold starts must finish activation once and join one machine.
     first = launcher("launch check -- readlink /proc/self/ns/pid")
     machine.succeed(
@@ -56,6 +59,7 @@ try:
         'wait "$first"; wait "$second"'
     )
     machine.succeed("cmp /tmp/ns-a /tmp/ns-b")
+    inside("true", "--join")
     # The compatibility wrapper maps the backing home even when the shell's
     # logical current directory reaches it through a host symlink.
     project_directory = "/home/alice/.sandbox/check/home/Projects/project's %h/subdir"
@@ -285,17 +289,17 @@ try:
     )
     # Appearance follows the host without granting interactive portal access.
     assert "host dark theme active" in cli(
-        "join no-portals -- sandbox-qt-portal-check --appearance-only"
+        "launch no-portals --join -- sandbox-qt-portal-check --appearance-only"
     )
     for address in ("/run/user/1000/bus", "/run/host/session-bus"):
         assert "u 1" in cli(
-            f"join no-portals -- busctl --address=unix:path={address} call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings ReadOne ss org.freedesktop.appearance color-scheme"
+            f"launch no-portals --join -- busctl --address=unix:path={address} call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings ReadOne ss org.freedesktop.appearance color-scheme"
         )
         cli(
-            f"join no-portals -- bash -ec '! busctl --address=unix:path={address} call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.FileChooser OpenFile ssa{{sv}} empty empty 0'"
+            f"launch no-portals --join -- bash -ec '! busctl --address=unix:path={address} call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.FileChooser OpenFile ssa{{sv}} empty empty 0'"
         )
     watcher = launcher(
-        f"join no-portals -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus python3 {APPEARANCE_CLIENT}"
+        f"launch no-portals --join -- env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus python3 {APPEARANCE_CLIENT}"
     )
     machine.execute(f"{watcher} >/tmp/appearance-watcher.log 2>&1 &")
     machine.wait_until_succeeds(

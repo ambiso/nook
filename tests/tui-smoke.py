@@ -113,6 +113,30 @@ def main():
             ([("Nook", b"e")], names[0], r"e-[a-f0-9]{16}"),
         ]
         try:
+            # --join must fail before creating runtime state or issuing a
+            # start request, for both the main instance and a saved named one.
+            for selection in [[], ["--name", "saved"]]:
+                result = subprocess.run(
+                    [
+                        str(binary),
+                        "--profiles",
+                        str(profiles),
+                        "launch",
+                        names[0],
+                        "--join",
+                        *selection,
+                        "--",
+                        "true",
+                    ],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert result.returncode == 1, result.stderr
+                assert "omit --join" in result.stderr, result.stderr
+                assert not started.exists()
+                assert not (runtime / names[0]).exists()
             for actions, name, instance in cases:
                 started.unlink(missing_ok=True)
                 assert select_instance(binary, profiles, environment, actions) == 1
@@ -126,7 +150,7 @@ def main():
             for name in names:
                 shutil.rmtree(runtime / name, ignore_errors=True)
         print(
-            "TUI checks passed: naming, saved instances, templates, ephemeral creation, quit"
+            "CLI/TUI checks passed: --join, naming, saved instances, templates, ephemeral creation, quit"
         )
 
 

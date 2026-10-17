@@ -49,12 +49,9 @@ struct Cli {
 enum Action {
     /// List configured profiles and running instances
     List,
-    /// Start an instance if necessary, then run a command or shell
-    #[command(visible_alias = "l")]
+    /// Launch an instance if necessary, then run a command or shell
+    #[command(visible_aliases = ["l", "start", "s"])]
     Launch(Launch),
-    /// Join an instance that is already running
-    #[command(visible_alias = "j")]
-    Join(Launch),
     /// Launch the profile's default GUI application with optional arguments
     Gui(Launch),
     /// Run the configured shell; used by nk-PROFILE wrappers
@@ -90,6 +87,9 @@ struct Launch {
     /// Create an independent instance with a clean, temporary home
     #[arg(long, conflicts_with_all = ["instance", "name"])]
     ephemeral: bool,
+    /// Require an already running instance instead of starting it
+    #[arg(long, conflicts_with = "ephemeral")]
+    join: bool,
     /// Command after --; GUI and shell wrappers accept application arguments
     #[arg(last = true)]
     command: Vec<String>,
@@ -242,13 +242,13 @@ fn launch(
     profile: &Profile,
     instance: &str,
     command: &[String],
-    start: bool,
+    start_if_stopped: bool,
     entry_point: EntryPoint,
 ) -> Result<i32> {
     let gui = matches!(entry_point, EntryPoint::Gui);
     if !is_running(profile, instance) {
-        if !start {
-            return Err("instance is not running; use launch to start it".into());
+        if !start_if_stopped {
+            return Err("instance is not running; omit --join to start it".into());
         }
         if gui && profile.get("gui")?.is_empty() {
             return Err("profile has no default GUI application".into());
@@ -488,11 +488,10 @@ fn run() -> Result<i32> {
                 .unwrap_or(1))
         }
         action => {
-            let (request, start, entry_point) = match action {
-                Action::Launch(request) => (request, true, EntryPoint::Command),
-                Action::Join(request) => (request, false, EntryPoint::Command),
-                Action::Gui(request) => (request, true, EntryPoint::Gui),
-                Action::Shell(request) => (request, true, EntryPoint::Shell),
+            let (request, entry_point) = match action {
+                Action::Launch(request) => (request, EntryPoint::Command),
+                Action::Gui(request) => (request, EntryPoint::Gui),
+                Action::Shell(request) => (request, EntryPoint::Shell),
                 _ => unreachable!(),
             };
             let profile = find_profile(&profiles, &request.selection.profile)?;
@@ -501,7 +500,13 @@ fn run() -> Result<i32> {
             } else {
                 request.selection.id()
             };
-            launch(profile, &instance, &request.command, start, entry_point)
+            launch(
+                profile,
+                &instance,
+                &request.command,
+                !request.join,
+                entry_point,
+            )
         }
     }
 }
@@ -524,10 +529,16 @@ mod tests {
     #[test]
     fn cli_definition_is_consistent() {
         Cli::command().debug_assert();
-        let launch = Cli::try_parse_from(["nk", "l", "dev"]).unwrap();
-        assert!(matches!(launch.command, Some(Action::Launch(_))));
-        let join = Cli::try_parse_from(["nk", "j", "dev"]).unwrap();
-        assert!(matches!(join.command, Some(Action::Join(_))));
+        for command in ["launch", "l", "start", "s"] {
+            let cli = Cli::try_parse_from(["nk", command, "dev", "--join"]).unwrap();
+            let Some(Action::Launch(request)) = cli.command else {
+                panic!("expected launch command");
+            };
+            assert!(request.join);
+        }
+        for removed in ["join", "j"] {
+            assert!(Cli::try_parse_from(["nk", removed, "dev"]).is_err());
+        }
     }
 
     #[test]
@@ -583,6 +594,7 @@ mod tests {
             vec!["--name", "project", "--instance", "n-other"],
             vec!["--name", "../escape"],
             vec!["--name", ""],
+            vec!["--ephemeral", "--join"],
         ] {
             assert!(
                 Cli::try_parse_from(["nk", "launch", "dev"].into_iter().chain(arguments)).is_err()

@@ -166,15 +166,18 @@ nk launch dev                         # start or join dev's main instance
 nk launch dev --name my-project        # independent persistent instance
 nk launch dev --ephemeral              # new instance with a temporary home
 nk launch dev -- git --version         # run a command
+nk launch dev --join -- git status    # require an already running instance
 nk gui zotero                         # launch the configured GUI application
 nk list
 nk stop dev --name my-project
 ```
 
-`nk l dev` is short for `nk launch dev`; `nk j dev` is short for `nk join dev`.
-`join` requires an already running instance.
+`launch` also accepts the aliases `l`, `start`, and `s`: `nk s dev` and
+`nk start dev` do the same thing as `nk launch dev`. Add `--join` to fail if the
+selected instance is stopped. This flag also works with `gui` and `shell`;
+it cannot be combined with `--ephemeral`, which always creates a new instance.
 
-In the selector, use arrows or **j/k** to select a row, **Enter** to launch/join,
+In the selector, use arrows or **j/k** to select a row, **Enter** to launch/enter,
 **n** to create a named instance from that profile, **e** for an ephemeral
 instance, **s** to stop, and **q** to quit. Named instances remain listed when
 stopped. Names accept 1–24 lowercase letters, digits, or hyphens.

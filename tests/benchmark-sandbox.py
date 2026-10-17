@@ -52,8 +52,9 @@ def measure(launcher, profile, instance):
     guest = properties(
         run(
             launcher,
-            "join",
+            "launch",
             profile,
+            "--join",
             "--instance",
             instance,
             "--",
