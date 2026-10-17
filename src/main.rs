@@ -2,6 +2,7 @@
 
 mod config;
 mod portal;
+mod storage;
 mod supervise;
 mod tui;
 
@@ -58,6 +59,8 @@ enum Action {
     Shell(Launch),
     /// Stop an instance; ephemeral homes are deleted on shutdown
     Stop(Instance),
+    /// Permanently delete a stopped, named instance and its saved home
+    Delete(Delete),
 }
 
 #[derive(Args)]
@@ -93,6 +96,75 @@ struct Launch {
     /// Command after --; GUI and shell wrappers accept application arguments
     #[arg(last = true)]
     command: Vec<String>,
+}
+
+#[derive(Args)]
+struct Delete {
+    #[command(flatten)]
+    selection: Instance,
+    /// Skip the interactive confirmation
+    #[arg(long, short = 'y')]
+    yes: bool,
+}
+
+fn require_stopped(profile: &Profile, instance: &str) -> Result<()> {
+    // A failed is-active call can mean a missing bus, not a stopped service.
+    // Destructive operations require a successful, explicit state query.
+    let output = Command::new("systemctl")
+        .args([
+            "show",
+            "--property=ActiveState",
+            "--value",
+            &profile.unit(instance)?,
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err("cannot verify instance state; refusing deletion".into());
+    }
+    if String::from_utf8_lossy(&output.stdout).trim() != "inactive" {
+        return Err("stop the instance with nk stop before deleting it".into());
+    }
+    Ok(())
+}
+
+fn prepare_deletion(profile: &Profile, instance: &str) -> Result<storage::SavedInstance> {
+    let saved = storage::SavedInstance::open(profile, instance)?;
+    require_stopped(profile, instance)?;
+    Ok(saved)
+}
+
+fn delete_instance(
+    profile: &Profile,
+    instance: &str,
+    saved: &storage::SavedInstance,
+) -> Result<()> {
+    // The supervisor holds this same lock for its entire lifetime. Checking
+    // systemd again under the lock covers a launch racing the confirmation.
+    let _lock = storage::lock_instance(profile, instance)?;
+    require_stopped(profile, instance)?;
+    saved.remove()
+}
+
+fn confirm_deletion(
+    profile: &Profile,
+    instance: &str,
+    saved: &storage::SavedInstance,
+) -> Result<bool> {
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Err("deletion requires confirmation in a terminal; use --yes for scripts".into());
+    }
+    eprint!(
+        "Permanently delete {}/{instance} and all data in {:?}? [y/N] ",
+        profile.get("name")?,
+        saved.path,
+    );
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn default_profiles() -> PathBuf {
@@ -486,6 +558,16 @@ fn run() -> Result<i32> {
             Ok(control_instance(profile, &selection.id(), "stop")?
                 .code()
                 .unwrap_or(1))
+        }
+        Action::Delete(request) => {
+            let profile = find_profile(&profiles, &request.selection.profile)?;
+            let instance = request.selection.id();
+            let saved = prepare_deletion(profile, &instance)?;
+            if request.yes || confirm_deletion(profile, &instance, &saved)? {
+                delete_instance(profile, &instance, &saved)?;
+                println!("Deleted {}/{instance}", profile.get("name")?);
+            }
+            Ok(0)
         }
         action => {
             let (request, entry_point) = match action {

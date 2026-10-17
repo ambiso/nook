@@ -66,6 +66,7 @@
               rustfmt
               clippy
               cargo-deny
+              bubblewrap
               pkg-config
               dbus.dev
             ];

@@ -170,6 +170,7 @@ nk launch dev --join -- git status    # require an already running instance
 nk gui zotero                         # launch the configured GUI application
 nk list
 nk stop dev --name my-project
+nk delete dev --name my-project        # confirm permanent removal of saved data
 ```
 
 `launch` also accepts the aliases `l`, `start`, and `s`: `nk s dev` and
@@ -179,7 +180,8 @@ it cannot be combined with `--ephemeral`, which always creates a new instance.
 
 In the selector, use arrows or **j/k** to select a row, **Enter** to launch/enter,
 **n** to create a named instance from that profile, **e** for an ephemeral
-instance, **s** to stop, and **q** to quit. Named instances remain listed when
+instance, **s** to stop, **d** to delete a stopped named instance after confirmation,
+and **q** to quit. Named instances remain listed when
 stopped. Names accept 1–24 lowercase letters, digits, or hyphens.
 
 New instances reuse their profile's configuration and permissions, starting
@@ -196,6 +198,15 @@ Homes are stored under `~/.sandbox/<profile>/home` for main instances and
 live on the host's `/run` tmpfs. Running `nk-dev` from inside dev's backing home
 opens the corresponding guest directory; host symlink aliases work too.
 GUI entry points also appear in desktop application search.
+
+To remove a named instance, stop it and run `nk delete PROFILE --name NAME`.
+The command shows the directory and asks for confirmation; use `--yes` for
+scripts. It removes that instance's saved directory and home with your host
+permissions. It refuses running instances, symlink roots, and mounted directories,
+and does not follow symlinks inside the home. File permission errors are reported;
+deletion is not transactional. Bind-mount sources outside the instance's saved
+directory are left alone. Main instances belong to their Nix profile and cannot be
+deleted this way; ephemeral homes disappear when stopped.
 
 ## Isolation and host access
 

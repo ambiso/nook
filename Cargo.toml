@@ -17,5 +17,6 @@ dbus = "0.9"
 glob = "0.3"
 nix = { version = "0.31", features = ["fs", "user", "signal", "mount"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+rustix = { version = "1.1", features = ["fs"] }
 signal-hook = "0.3"
 tempfile = "3"

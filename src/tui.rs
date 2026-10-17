@@ -1,4 +1,7 @@
-use crate::{Choice, Profile, Result, choices, control_instance, new_ephemeral_id, parse_name};
+use crate::{
+    Choice, Profile, Result, choices, control_instance, delete_instance, new_ephemeral_id,
+    parse_name, prepare_deletion, storage::SavedInstance,
+};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -13,6 +16,12 @@ use std::{
 struct NamePrompt {
     profile: usize,
     name: String,
+    error: Option<String>,
+}
+
+struct DeletePrompt {
+    choice: Choice,
+    saved: SavedInstance,
     error: Option<String>,
 }
 
@@ -47,6 +56,8 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
         let mut selection = ListState::default().with_selected(Some(0));
         let mut refreshed = Instant::now();
         let mut prompt: Option<NamePrompt> = None;
+        let mut deletion: Option<DeletePrompt> = None;
+        let mut status: Option<String> = None;
         loop {
             if entries.is_empty() {
                 return Err("no sandbox profiles are configured".into());
@@ -71,9 +82,9 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     .highlight_style(Style::new().fg(Color::Cyan));
                 frame.render_stateful_widget(list, list_area, &mut selection);
                 frame.render_widget(
-                    Paragraph::new(
-                        "↑/↓ j/k: select   Enter: launch/enter   n: named   e: ephemeral   s: stop   q: quit",
-                    )
+                    Paragraph::new(status.as_deref().unwrap_or(
+                        "↑/↓ j/k: select   Enter: launch/enter   n: named   e: ephemeral   s: stop   d: delete   q: quit",
+                    ))
                     .wrap(Wrap { trim: false }),
                     help_area,
                 );
@@ -104,6 +115,33 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                         popup,
                     );
                 }
+                if let Some(deletion) = &deletion {
+                    let area = frame.area();
+                    let width = area.width.saturating_sub(4).min(76);
+                    let height = area.height.min(9);
+                    let popup = Rect::new(
+                        area.x + (area.width - width) / 2,
+                        area.y + (area.height - height) / 2,
+                        width,
+                        height,
+                    );
+                    let choice = &deletion.choice;
+                    let help = deletion.error.as_deref().unwrap_or(
+                        "All saved data will be permanently removed. y: delete; n/Esc: cancel.",
+                    );
+                    frame.render_widget(Clear, popup);
+                    frame.render_widget(
+                        Paragraph::new(format!(
+                            "{}/{}\n{:?}\n\n{help}",
+                            profiles[choice.profile].get("name").unwrap_or("?"),
+                            choice.instance,
+                            deletion.saved.path,
+                        ))
+                        .block(Block::bordered().title(" Delete saved instance? "))
+                        .wrap(Wrap { trim: false }),
+                        popup,
+                    );
+                }
             })?;
             if event::poll(Duration::from_millis(250))?
                 && let Event::Key(key) = event::read()?
@@ -113,6 +151,31 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 }
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return Ok(None);
+                }
+                if let Some(input) = &mut deletion {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('n') => deletion = None,
+                        KeyCode::Char('y')
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                        {
+                            let choice = &input.choice;
+                            match delete_instance(
+                                &profiles[choice.profile],
+                                &choice.instance,
+                                &input.saved,
+                            ) {
+                                Ok(()) => {
+                                    deletion = None;
+                                    entries = choices(profiles)?;
+                                }
+                                Err(error) => input.error = Some(error.to_string()),
+                            }
+                        }
+                        _ => (),
+                    }
+                    continue;
                 }
                 if let Some(input) = &mut prompt {
                     match key.code {
@@ -137,6 +200,7 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     }
                     continue;
                 }
+                status = None;
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -167,11 +231,27 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                         control_instance(&profiles[choice.profile], &choice.instance, "stop")?;
                         entries = choices(profiles)?;
                     }
+                    KeyCode::Char('d') => {
+                        let choice = entries[selected].clone();
+                        match prepare_deletion(&profiles[choice.profile], &choice.instance) {
+                            Ok(saved) => {
+                                deletion = Some(DeletePrompt {
+                                    choice,
+                                    saved,
+                                    error: None,
+                                })
+                            }
+                            Err(error) => status = Some(error.to_string()),
+                        }
+                    }
                     _ => (),
                 }
             }
             // Avoid re-querying systemd for every frame or cursor movement.
-            if prompt.is_none() && refreshed.elapsed() >= Duration::from_secs(2) {
+            if prompt.is_none()
+                && deletion.is_none()
+                && refreshed.elapsed() >= Duration::from_secs(2)
+            {
                 entries = choices(profiles)?;
                 refreshed = Instant::now();
             }

@@ -25,6 +25,11 @@ deployed on the original host; the rebuild-preservation change has not. A VM
 regression for switching configurations without restarting an instance is
 included but has only been evaluated.
 
+The instance-deletion addition passed 22 native tests, 16 Miri tests, Clippy,
+the CLI/TUI smoke checks, and a bind-mount refusal check in a nested user/mount
+namespace. Six Linux-specific tests were excluded from Miri and passed natively.
+The VM deletion regression has only been evaluated.
+
 ## Rust checks
 
 Run these commands from the repository root inside a development sandbox:
@@ -37,6 +42,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo deny --locked check licenses
 cargo build --locked
 python3 tests/tui-smoke.py target/debug/nk
+python3 tests/delete-mount-smoke.py target/debug/nk
 ```
 
 `nix develop` provides build tools; it does not itself isolate execution from
@@ -44,6 +50,9 @@ your host. The tests create temporary files and exercise mount-path validation,
 instance naming, current-directory translation, and portal request routing.
 The PTY smoke test uses a temporary profile catalog and a fake `systemctl`; it
 checks the real selector without starting services or invoking a root helper.
+The deletion tests use disposable directories. They check confirmation and
+cancellation, refusal of active instances, symlink and replacement guards, and
+a same-filesystem bind mount inside a temporary user/mount namespace.
 
 `deny.toml` checks the locked Rust dependency graph, including build and test
 dependencies, against a license allowlist. An unlisted or missing license fails
@@ -56,12 +65,19 @@ run inside the sandbox:
 
 ```sh
 unset RUSTC RUSTDOC RUSTC_WRAPPER
-TMPDIR=/tmp MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-env-forward=TMPDIR" rustup run nightly-2026-09-17 cargo miri test --locked -- --skip supervise::tests::nested_mountpoint_creation_cannot_follow_symlinks
+TMPDIR=/tmp MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-env-forward=TMPDIR" rustup run nightly-2026-09-17 cargo miri test --locked -- \
+  --skip supervise::tests::nested_mountpoint_creation_cannot_follow_symlinks \
+  --skip storage::tests::deleting_one_home_preserves_neighbors_and_symlink_targets \
+  --skip storage::tests::symlink_instance_roots_are_refused \
+  --skip storage::tests::mounts_are_rejected_before_any_removal \
+  --skip storage::tests::lifecycle_lock_excludes_startup_and_deletion \
+  --skip storage::tests::replacing_a_confirmed_directory_is_refused
 ```
 
 Filesystem access is needed for the temporary-directory tests. The skipped
-test uses Linux `openat`, which Miri does not implement; it runs in the native
-test suite instead. Use a stable `TMPDIR` when building Miri artifacts. If cached
+tests use Linux `openat`, `openat2`, directory iteration, or file locks that Miri
+does not implement; they run in the native test suite instead.
+Use a stable `TMPDIR` when building Miri artifacts. If cached
 artifacts retain a deleted directory from an earlier Nix shell, rerun with a
 fresh `CARGO_TARGET_DIR`.
 

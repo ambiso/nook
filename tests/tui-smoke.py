@@ -96,6 +96,9 @@ def main():
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "from pathlib import Path\n"
+            "if sys.argv[1] == 'show':\n"
+            "    print(os.environ.get('NOOK_SMOKE_STATE', 'inactive'))\n"
+            "    sys.exit(1 if os.environ.get('NOOK_SMOKE_QUERY_FAIL') else 0)\n"
             "if sys.argv[1] == 'start':\n"
             "    Path(os.environ['NOOK_SMOKE_LOG']).write_text(json.dumps(sys.argv[2:]))\n"
             "sys.exit(0 if sys.argv[1] == 'list-units' else 1)\n"
@@ -146,11 +149,85 @@ def main():
                     unit,
                 ), unit
             assert select_instance(binary, profiles, environment, [("Nook", b"q")]) == 0
+            saved = root / names[0] / "instances/n-saved"
+            other = root / names[1] / "instances/n-saved"
+            delete = [
+                str(binary),
+                "--profiles",
+                str(profiles),
+                "delete",
+                names[0],
+                "--name",
+                "saved",
+            ]
+            # A script must explicitly opt into irreversible deletion.
+            result = subprocess.run(
+                delete, env=environment, capture_output=True, text=True
+            )
+            assert result.returncode == 1 and "confirmation" in result.stderr, (
+                result.stderr
+            )
+            assert saved.is_dir()
+            for extra in [
+                {"NOOK_SMOKE_STATE": "active"},
+                {"NOOK_SMOKE_STATE": "activating"},
+                {"NOOK_SMOKE_QUERY_FAIL": "1"},
+            ]:
+                result = subprocess.run(
+                    delete + ["--yes"],
+                    env=environment | extra,
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 1, result.stderr
+                assert saved.is_dir()
+
+            # Cancelling the TUI dialog keeps all data; confirming removes only
+            # that named instance, not the template or its neighbor.
+            (saved / "home/keep").write_text("saved data")
+            assert (
+                select_instance(
+                    binary,
+                    profiles,
+                    environment,
+                    [("Nook", b"jd"), ("instance?", b"\x19nq")],
+                )
+                == 0
+            )
+            assert (saved / "home/keep").read_text() == "saved data"
+            assert (
+                select_instance(
+                    binary,
+                    profiles,
+                    environment,
+                    [("Nook", b"jd"), ("instance?", b"yq")],
+                )
+                == 0
+            )
+            assert not saved.exists()
+            assert other.is_dir()
+            result = subprocess.run(
+                [
+                    str(binary),
+                    "--profiles",
+                    str(profiles),
+                    "delete",
+                    names[1],
+                    "--name",
+                    "saved",
+                    "--yes",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            assert not other.exists()
         finally:
             for name in names:
                 shutil.rmtree(runtime / name, ignore_errors=True)
         print(
-            "CLI/TUI checks passed: --join, naming, saved instances, templates, ephemeral creation, quit"
+            "CLI/TUI checks passed: --join, naming, instances, deletion guards, confirmation, cancellation, quit"
         )
 
 

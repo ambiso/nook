@@ -745,6 +745,15 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     if !canonical.starts_with("/nix/store") {
         return Err("system services require an immutable Nix store profile".into());
     }
+    // Named homes can be deleted while stopped. Keep the owner-side lifecycle
+    // lock until this supervisor exits, so deletion and startup never overlap.
+    let _storage_lock = if instance.starts_with("n-") {
+        Some(as_user(profile, || {
+            crate::storage::lock_instance(profile, instance)
+        })?)
+    } else {
+        None
+    };
     let machine = profile.machine(instance)?;
     let runtime = PathBuf::from(format!("/run/{machine}"));
     if !runtime.is_dir() {

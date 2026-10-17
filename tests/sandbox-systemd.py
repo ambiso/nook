@@ -456,7 +456,13 @@ for desktop_id, query in [
     cli("stop check --name from-tui")
     assert "check\tn-from-tui\tstopped" in cli("list")
     inside("test -e ~/tui-created", "--name from-tui")
+    machine.fail(launcher("delete check --name from-tui --yes"))
     cli("stop check --name from-tui")
+    machine.fail(launcher("delete check --name from-tui"))
+    cli("delete check --name from-tui --yes")
+    assert "check\tn-from-tui\t" not in cli("list")
+    machine.succeed("test ! -e /home/alice/.sandbox/check/instances/n-from-tui")
+    machine.succeed(f"grep -Fx guest-output {shared_storage}/guest-marker")
 
     # A template's non-persistent main home must not make named homes temporary.
     cli("launch fallback --name project -- bash -ec 'touch ~/saved'")
