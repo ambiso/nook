@@ -6,6 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Style},
+    text::{Line, Span},
     widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
@@ -23,6 +24,14 @@ struct DeletePrompt {
     choice: Choice,
     saved: SavedInstance,
     error: Option<String>,
+}
+
+pub fn running_indicator(running: bool) -> Span<'static> {
+    if running {
+        Span::styled("● ", Style::new().fg(Color::Green))
+    } else {
+        Span::raw("  ")
+    }
 }
 
 impl NamePrompt {
@@ -69,12 +78,16 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     Layout::vertical([Constraint::Min(3), Constraint::Length(2)])
                         .areas(frame.area());
                 let rows = entries.iter().map(|choice| {
-                    ListItem::new(format!(
+                    let text = format!(
                         "{:<24} {:<22} {}",
                         profiles[choice.profile].values["name"],
                         choice.instance,
                         if choice.running { "running" } else { "stopped" },
-                    ))
+                    );
+                    ListItem::new(Line::from(vec![
+                        running_indicator(choice.running),
+                        Span::raw(text),
+                    ]))
                 });
                 let list = List::new(rows)
                     .block(Block::bordered().title(" Nook "))
@@ -291,5 +304,18 @@ mod tests {
             prompt.name = invalid.into();
             assert!(prompt.submit(&[]).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn running_instances_have_a_green_indicator() {
+        assert_eq!(running_indicator(true).content, "● ");
+        assert!(
+            running_indicator(true)
+                .style
+                .fg
+                .is_some_and(|color| color == Color::Green)
+        );
+        assert_eq!(running_indicator(false).content, "  ");
+        assert_eq!(running_indicator(false).style.fg, None);
     }
 }

@@ -25,8 +25,8 @@ the Home Manager configuration. Relative paths remain relative to your home.
 For a clean migration, stop each sandbox before copying. This ensures saved
 homes and instance metadata do not change during the final copy.
 
-1. Stop each running profile and named instance, for example with
-   `nk stop dev` and `nk stop dev --name project`.
+1. Stop every running instance with `nk stop --all`, or an individual one with
+   `nk stop dev` or `nk stop dev --name project`.
 2. Copy the old state tree into the new root. The example below assumes
    `config.xdg.stateHome` is `~/.local/state`; use its configured absolute path
    if you changed it:

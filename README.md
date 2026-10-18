@@ -255,6 +255,8 @@ nk launch dev --join -- git status    # require an already running instance
 nk gui zotero                         # launch the configured GUI application
 nk list
 nk stop dev --name my-project
+nk stop dev --all                         # stop every running instance of dev
+nk stop --all                             # stop every running sandbox
 nk delete dev --name my-project        # confirm permanent removal of saved data
 ```
 
@@ -266,8 +268,9 @@ it cannot be combined with `--ephemeral`, which always creates a new instance.
 In the selector, use arrows or **j/k** to select a row, **Enter** to launch/enter,
 **n** to create a named instance from that profile, **e** for an ephemeral
 instance, **s** to stop, **d** to delete a stopped named instance after confirmation,
-and **q** to quit. Named instances remain listed when
-stopped. Names accept 1–24 lowercase letters, digits, or hyphens.
+and **q** to quit. Running instances have a green **●** to their left. Named
+instances remain listed when stopped. Names accept 1–24 lowercase letters,
+digits, or hyphens.
 
 New instances reuse their profile's configuration and permissions, starting
 with a clean home. They do not copy projects, credentials, or caches from the
@@ -276,7 +279,11 @@ the main home temporary. Named homes always persist. Exiting a shell leaves the
 instance running; stopping an ephemeral instance deletes its home.
 `nk list` shows its ID so you can rejoin
 or stop it with `--instance e-…`. `--name project` is shorthand for
-`--instance n-project`.
+`--instance n-project`. `nk stop PROFILE --all` stops every running instance of
+that profile, while `nk stop --all` stops every running instance in the profile
+catalog. Both commands skip already stopped instances and report each stop
+request; if one request fails, remaining instances are still stopped and the
+command exits nonzero.
 
 Guest hostnames default to the template and instance name: `dev-main`,
 `dev-project` for `--name project`, or `dev-e-…` for an ephemeral instance.

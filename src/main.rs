@@ -60,7 +60,7 @@ enum Action {
     /// Run the configured shell; used by nk-PROFILE wrappers
     Shell(Launch),
     /// Stop an instance; ephemeral homes are deleted on shutdown
-    Stop(Instance),
+    Stop(Stop),
     /// Permanently delete a stopped, named instance and its saved home
     Delete(Delete),
 }
@@ -77,6 +77,33 @@ struct Instance {
 }
 
 impl Instance {
+    fn id(&self) -> String {
+        match &self.name {
+            Some(name) => format!("n-{name}"),
+            None => self.instance.clone(),
+        }
+    }
+}
+
+#[derive(Args)]
+struct Stop {
+    #[arg(requires = "all")]
+    profile: Option<String>,
+    /// Stop every running instance of PROFILE, or every configured profile if omitted
+    #[arg(long)]
+    all: bool,
+    #[arg(
+        long,
+        default_value = "main",
+        value_parser = parse_instance,
+        conflicts_with_all = ["all", "name"]
+    )]
+    instance: String,
+    #[arg(long, conflicts_with_all = ["all", "instance"], value_parser = parse_name)]
+    name: Option<String>,
+}
+
+impl Stop {
     fn id(&self) -> String {
         match &self.name {
             Some(name) => format!("n-{name}"),
@@ -519,6 +546,45 @@ fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
     Ok(choices)
 }
 
+fn stop_all(profiles: &[Profile], profile: Option<&str>) -> Result<i32> {
+    let targets: Vec<Choice> = choices(profiles)?
+        .into_iter()
+        .filter(|choice| {
+            profile.is_none_or(|profile| profiles[choice.profile].values["name"] == profile)
+        })
+        .collect();
+    if targets.is_empty() {
+        return Err("no running instances".into());
+    }
+    let mut exit_code = 0;
+    let mut failures = 0;
+    for choice in targets {
+        let profile = &profiles[choice.profile];
+        if !is_running(profile, &choice.instance) {
+            continue;
+        }
+        if !control_instance(profile, &choice.instance, "stop")?.success() {
+            exit_code = exit_code.max(1);
+            failures += 1;
+            eprintln!(
+                "nk: failed to stop {}/{instance}",
+                profile.values["name"],
+                instance = choice.instance
+            );
+        } else {
+            println!(
+                "Stopped {}/{instance}",
+                profile.values["name"],
+                instance = choice.instance
+            );
+        }
+    }
+    if failures > 0 {
+        eprintln!("nk: {failures} instance stop request(s) failed");
+    }
+    Ok(exit_code)
+}
+
 fn run() -> Result<i32> {
     // pkexec authorization must never enable completion handling in the root helper.
     if env::var_os("PKEXEC_UID").is_none() {
@@ -582,11 +648,18 @@ fn run() -> Result<i32> {
             }
             Ok(0)
         }
-        Action::Stop(selection) => {
-            let profile = find_profile(&profiles, &selection.profile)?;
-            Ok(control_instance(profile, &selection.id(), "stop")?
-                .code()
-                .unwrap_or(1))
+        Action::Stop(request) => {
+            if request.all {
+                stop_all(&profiles, request.profile.as_deref())
+            } else {
+                let Some(profile_name) = request.profile.as_deref() else {
+                    return Err("stop requires a profile, or --all".into());
+                };
+                let profile = find_profile(&profiles, profile_name)?;
+                Ok(control_instance(profile, &request.id(), "stop")?
+                    .code()
+                    .unwrap_or(1))
+            }
         }
         Action::Delete(request) => {
             let profile = find_profile(&profiles, &request.selection.profile)?;
@@ -722,9 +795,37 @@ mod tests {
         assert_eq!(request.selection.id(), "n-my-project");
 
         let cli = Cli::try_parse_from(["nk", "stop", "dev", "--name", "my-project"]).unwrap();
-        let Some(Action::Stop(selection)) = cli.command else {
+        let Some(Action::Stop(request)) = cli.command else {
             panic!("expected stop command");
         };
-        assert_eq!(selection.id(), "n-my-project");
+        assert_eq!(request.id(), "n-my-project");
+    }
+
+    #[test]
+    fn stop_all_selects_a_profile_or_everything() {
+        let cli = Cli::try_parse_from(["nk", "stop", "dev", "--all"]).unwrap();
+        let Some(Action::Stop(request)) = cli.command else {
+            panic!("expected stop command");
+        };
+        assert_eq!(request.profile.as_deref(), Some("dev"));
+        assert!(request.all);
+
+        let cli = Cli::try_parse_from(["nk", "stop", "--all"]).unwrap();
+        let Some(Action::Stop(request)) = cli.command else {
+            panic!("expected stop command");
+        };
+        assert_eq!(request.profile, None);
+        assert!(request.all);
+
+        for arguments in [
+            vec!["--all", "--instance", "n-project"],
+            vec!["--all", "--name", "project"],
+        ] {
+            assert!(
+                Cli::try_parse_from(["nk", "stop", "dev"].into_iter().chain(arguments.clone()))
+                    .is_err(),
+                "{arguments:?}"
+            );
+        }
     }
 }

@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as temporary:
     add_profile(directory, "dev", state)
     (root / "bin").mkdir()
     (root / "bin/sandbox").symlink_to(package / "bin/nk")
-    env = dict(os.environ, NOOK_PROFILES=str(directory))
+    env = dict(os.environ, NOOK_PROFILES=str(directory), NOOK_SMOKE_STATE="inactive")
     env["PATH"] = f"{root / 'bin'}:{package / 'bin'}:{env['PATH']}"
 
     def candidates(shell, words):
@@ -65,6 +65,7 @@ _clap_dynamic_completer_{name}
         for name in ["nk", "sandbox"]:
             assert "dev" in candidates(shell, [name, "launch", "d"]), (shell, name)
             assert "--ephemeral" in candidates(shell, [name, "launch", "dev", "--e"])
+            assert "--all" in candidates(shell, [name, "stop", "dev", "--a"])
             assert "--yes" in candidates(shell, [name, "delete", "dev", "--y"])
             assert "--serve" not in candidates(shell, [name, "--"])
             assert "n-project" in candidates(shell, [name, "launch", "dev", "--instance", "n-"])

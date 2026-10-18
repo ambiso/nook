@@ -26,7 +26,7 @@ def owner_key():
     )
 
 
-def select_instance(binary, profiles, environment, actions):
+def select_instance(binary, profiles, environment, actions, output_log=None):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     output = bytearray()
@@ -49,10 +49,13 @@ def select_instance(binary, profiles, environment, actions):
                         if select.select([master], [], [], 0.1)[0]:
                             output.extend(os.read(master, 65536))
                     os.write(master, keys)
-                return process.wait(timeout=10)
+                code = process.wait(timeout=10)
             finally:
                 if process.poll() is None:
                     process.kill()
+            if output_log is not None:
+                output_log.extend(output)
+            return code
     finally:
         os.close(master)
         os.close(slave)
@@ -67,6 +70,7 @@ def main():
         profiles.mkdir()
         mock_bin.mkdir()
         started = root / "started.json"
+        stopped = root / "stopped.json"
         token = secrets.token_hex(3)
         names = [f"smoke-{token}-{suffix}" for suffix in ["a", "b"]]
         runtime = Path(f"/run/user/{os.getuid()}/sandbox")
@@ -106,18 +110,25 @@ def main():
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "from pathlib import Path\n"
+            "if sys.argv[1] == 'is-active':\n"
+            "    sys.exit(0 if os.environ.get('NOOK_SMOKE_STATE') == 'active' else 1)\n"
             "if sys.argv[1] == 'show':\n"
             "    print(os.environ.get('NOOK_SMOKE_STATE', 'inactive'))\n"
             "    sys.exit(1 if os.environ.get('NOOK_SMOKE_QUERY_FAIL') else 0)\n"
             "if sys.argv[1] == 'start':\n"
             "    Path(os.environ['NOOK_SMOKE_LOG']).write_text(json.dumps(sys.argv[2:]))\n"
-            "sys.exit(0 if sys.argv[1] == 'list-units' else 1)\n"
+            "if sys.argv[1] == 'stop':\n"
+            "    with open(os.environ['NOOK_SMOKE_STOP_LOG'], 'a') as log:\n"
+            "        log.write(json.dumps(sys.argv[2:]) + '\\n')\n"
+            "sys.exit(0 if sys.argv[1] in ('list-units', 'stop') else 1)\n"
         )
         systemctl.chmod(0o700)
         environment = os.environ | {
             "TERM": "xterm-256color",
             "PATH": str(mock_bin) + os.pathsep + os.environ["PATH"],
             "NOOK_SMOKE_LOG": str(started),
+            "NOOK_SMOKE_STOP_LOG": str(stopped),
+            "NOOK_SMOKE_STATE": "inactive",
         }
         cases = [
             ([("Nook", b"n"), ("template:", b"project\r")], names[0], "n-project"),
@@ -178,6 +189,67 @@ def main():
                     unit,
                 ), unit
             assert select_instance(binary, profiles, environment, [("Nook", b"q")]) == 0
+            indicator_output = bytearray()
+            assert (
+                select_instance(
+                    binary,
+                    profiles,
+                    environment | {"NOOK_SMOKE_STATE": "active"},
+                    [("Nook", b"q")],
+                    indicator_output,
+                )
+                == 0
+            )
+            assert "●" in indicator_output.decode(errors="replace"), indicator_output
+            result = subprocess.run(
+                [
+                    str(binary),
+                    "--profiles",
+                    str(profiles),
+                    "stop",
+                    "--all",
+                ],
+                env=environment | {"NOOK_SMOKE_STATE": "active"},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert result.returncode == 0, result.stderr
+            assert "Stopped " in result.stdout, (result.stdout, result.stderr)
+            units = [json.loads(line)[0] for line in stopped.read_text().splitlines()]
+            assert len(units) == 4, units
+            assert all(
+                unit
+                    == f"sandbox-{owner_key()}-{names[int(index / 2)]}@{instance}.service"
+                for index, (unit, instance) in enumerate(
+                    zip(units, ["main", "n-saved", "main", "n-saved"])
+                )
+            ), units
+
+            stopped.unlink()
+            result = subprocess.run(
+                [
+                    str(binary),
+                    "--profiles",
+                    str(profiles),
+                    "stop",
+                    names[0],
+                    "--all",
+                ],
+                env=environment | {"NOOK_SMOKE_STATE": "active"},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert result.returncode == 0, result.stderr
+            units = [json.loads(line)[0] for line in stopped.read_text().splitlines()]
+            assert len(units) == 2, units
+            assert all(
+                unit == f"sandbox-{owner_key()}-{names[0]}@{instance}.service"
+                for unit, instance in zip(units, ["main", "n-saved"])
+            ), units
+
+            stopped.unlink()
             saved = root / names[0] / "instances/n-saved"
             other = root / names[1] / "instances/n-saved"
             delete = [
