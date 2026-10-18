@@ -102,7 +102,10 @@ in
       podman = true;
       portals = true;
       startX = true;
-      devices = [ "/dev/kvm" ];
+      devices = [
+        "/dev/kvm"
+        # "/dev/kfd" # AMD ROCm compute; gpu = true already exposes /dev/dri.
+      ];
     };
     sandboxes.zotero = {
       packages = [ pkgs.zotero ];
