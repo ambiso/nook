@@ -17,18 +17,17 @@ services: it selected the running generation's shell, GUI command, username,
 and working directory and rejected mismatched owners and profiles.
 
 `nix flake check --no-build --all-systems` passed, and the original host's full
-configuration evaluated using the extracted module. The VM test derivations
-were evaluated for both architectures, but the full VM suite has not been
-re-run on the extraction. Earlier desktop use, VM runs, and the measurements in
-the benchmark notes predate this extraction. The initial extraction has been
-deployed on the original host; the rebuild-preservation change has not. A VM
-regression for switching configurations without restarting an instance is
-included but has only been evaluated.
+configuration evaluated using the extracted module. On 2026-10-18, the full
+x86_64 integration suite passed with KVM: the VM script took 131.28 seconds,
+and evaluation, configuration builds, and execution finished in about five
+minutes. This included rebuild preservation, automatic host IDs, dconf, cursor
+paths, GTK/Qt portals, networking, hotplug devices, nested Podman, and CLI/TUI
+instance management. The aarch64 VM derivation has only been evaluated. Earlier
+performance measurements in the benchmark notes predate the extraction.
 
 The instance-deletion addition passed 22 native tests, 16 Miri tests, Clippy,
 the CLI/TUI smoke checks, and a bind-mount refusal check in a nested user/mount
 namespace. Six Linux-specific tests were excluded from Miri and passed natively.
-The VM deletion regression has only been evaluated.
 
 The runtime host-identity change passed 27 native tests, 19 Miri tests, Clippy,
 and the CLI/TUI and deletion checks. Two additional tests (NSS account lookup
@@ -36,22 +35,20 @@ and reservation migration locks) are marked unsupported under Miri and passed
 natively. The entry-helper fixture runs as namespace root inside bubblewrap;
 it checks the running generation, caller ownership, and pinned host UID/GID
 without invoking a real host service. Module checks cover automatic UID/GID
-allocation and migration errors for removed host-ID overrides. The expanded
-VM regression has only been evaluated.
+allocation and migration errors for removed host-ID overrides.
 
 The dconf activation fix was checked with two private D-Bus sessions inside dev:
 an empty service registry reproduces `ServiceUnknown`, and registering dconf's
 service allows theme, icon, and color-scheme writes to persist in a disposable
-home. Module assertions cover the guest D-Bus/systemd registration. The expanded
-Home Manager dconf VM regression has only been evaluated.
+home. Module assertions cover the guest D-Bus/systemd registration.
 
 The preference/cursor change has Nix assertions for module and profile overrides,
 unset variables, cursor ordering, user/state path expansion, and systemd quoting.
 The cursor smoke test also ran inside dev using real transient systemd services
 and libXcursor, with a disposable home in bubblewrap. The old single-directory
 path and an unexpanded `$HOME` path both fail to find the fixture cursor; the
-evaluated NixOS search path finds it. The full guest VM regression has only been
-evaluated.
+evaluated NixOS search path finds it. The full VM run also verified cursor paths
+in a booted Nook guest.
 
 To repeat that focused runtime check, supply a libXcursor library, an installed
 Xcursor-format file (such as Adwaita's `cursors/left_ptr`), and JSON containing
