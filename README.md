@@ -237,6 +237,9 @@ Cursor lookup includes the guest's `~/.icons`, `~/.local/share/icons`, and NixOS
 profile icon directories. Setting a profile's `environment.XCURSOR_PATH` adds
 preferred directories before those fallbacks. Guest Qt and cursor settings also
 reach apps launched as transient systemd services.
+Cursor search paths expand `$HOME`, `$USER`, and `$XDG_STATE_HOME` (also in
+`${…}` form) for that guest. Other variable names remain literal; shell commands
+and parameter expressions are not evaluated.
 Portal environment flags control application behavior; the profile's `portals`
 option controls whether Nook grants portal access.
 

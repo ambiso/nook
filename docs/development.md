@@ -45,6 +45,26 @@ service allows theme, icon, and color-scheme writes to persist in a disposable
 home. Module assertions cover the guest D-Bus/systemd registration. The expanded
 Home Manager dconf VM regression has only been evaluated.
 
+The preference/cursor change has Nix assertions for module and profile overrides,
+unset variables, cursor ordering, user/state path expansion, and systemd quoting.
+The cursor smoke test also ran inside dev using real transient systemd services
+and libXcursor, with a disposable home in bubblewrap. The old single-directory
+path and an unexpanded `$HOME` path both fail to find the fixture cursor; the
+evaluated NixOS search path finds it. The full guest VM regression has only been
+evaluated.
+
+To repeat that focused runtime check, supply a libXcursor library, an installed
+Xcursor-format file (such as Adwaita's `cursors/left_ptr`), and JSON containing
+your guest's evaluated `systemd.globalEnvironment`. The guest home in that
+configuration must match the user running the test:
+
+```sh
+python3 tests/cursor-smoke.py LIBXCURSOR_SO CURSOR_FILE ENVIRONMENT_JSON
+```
+
+The test needs `systemd-run` and bubblewrap inside a running development sandbox;
+`--bubblewrap PATH` selects a bubblewrap executable outside `PATH`.
+
 ## Rust checks
 
 Run these commands from the repository root inside a development sandbox:

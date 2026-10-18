@@ -81,7 +81,7 @@ let
       {
         environment.variables = preferenceOverrides // {
           XCURSOR_SIZE = 32;
-          XDG_STATE_HOME = "$HOME/state";
+          XDG_STATE_HOME = "$HOME/state/$USER";
         };
         environment.sessionVariables.XCURSOR_PATH = lib.mkBefore [ "/custom/100%/icons" ];
         environment.profileRelativeSessionVariables.XCURSOR_PATH = [ "/custom-cursors" ];
@@ -99,6 +99,10 @@ let
     nixosModules = [
       { environment.variables.GDK_DEBUG = null; }
     ];
+  };
+  literalCursorPaths = "/literal/$HOMELESS/icons:/literal/$USERNAME/icons:/literal/$XDG_STATE_HOME_EXTRA/icons:/literal/\${HOMELESS}/icons";
+  literalCursor = appearanceGuest {
+    environment.XCURSOR_PATH = literalCursorPaths;
   };
   disabledAppearance = automatic.home-manager.users.alice.programs.nook.sandboxes.dev._container;
   sessionValueReachesApplications =
@@ -147,7 +151,9 @@ assert lib.elem "/etc/profiles/per-user/alice/share/icons" (cursorPaths portalTh
 assert lib.hasPrefix "/custom/100%/icons:"
   configuredPreferences.systemd.globalEnvironment.XCURSOR_PATH;
 assert lib.elem "/run/current-system/sw/custom-cursors" (cursorPaths configuredPreferences);
-assert lib.elem "/home/alice/state/nix/profile/custom-cursors" (cursorPaths configuredPreferences);
+assert lib.elem "/home/alice/state/alice/nix/profile/custom-cursors" (
+  cursorPaths configuredPreferences
+);
 assert sessionValueReachesApplications configuredPreferences "XCURSOR_PATH"
   configuredPreferences.systemd.globalEnvironment.XCURSOR_PATH;
 assert lib.hasPrefix "/preferred/icons:/more/icons:/home/alice/.icons:"
@@ -155,6 +161,7 @@ assert lib.hasPrefix "/preferred/icons:/more/icons:/home/alice/.icons:"
 assert sessionValueReachesApplications profilePreferences "XCURSOR_PATH"
   profilePreferences.systemd.globalEnvironment.XCURSOR_PATH;
 assert !lib.hasInfix "$" portalTheme.systemd.globalEnvironment.XCURSOR_PATH;
+assert lib.hasPrefix "${literalCursorPaths}:" literalCursor.systemd.globalEnvironment.XCURSOR_PATH;
 assert guest.sandboxes.dev._container.networking.hostName == "";
 assert !(guest.sandboxes.dev._container.environment.etc ? hostname);
 assert

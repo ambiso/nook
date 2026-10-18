@@ -60,13 +60,36 @@ let
   # Login shells expand these NixOS profile placeholders; systemd manager
   # environments do not. Resolve the known user paths without evaluating shell
   # code, retaining the standard home and profile cursor directories.
-  stateHome = lib.replaceStrings [ "\${HOME}" "$HOME" ] [ home home ] (
+  expandVariables =
+    variables: value:
+    lib.concatMapStrings (
+      part:
+      if builtins.isList part then
+        let
+          token = builtins.head part;
+        in
+        variables.${token} or token
+      else
+        part
+    ) (builtins.split "([$][{][A-Za-z_][A-Za-z0-9_]*[}]|[$][A-Za-z_][A-Za-z0-9_]*)" value);
+  # Match complete variable names: replacing "$HOME" as a substring would
+  # corrupt unrelated names such as "$HOMELESS". Unknown names stay literal.
+  userVariables = {
+    "$HOME" = home;
+    "\${HOME}" = home;
+    "$USER" = username;
+    "\${USER}" = username;
+  };
+  stateHome = expandVariables userVariables (
     config.environment.variables.XDG_STATE_HOME or "${home}/.local/state"
   );
-  expandUserPaths =
-    lib.replaceStrings
-      [ "\${HOME}" "$HOME" "\${USER}" "$USER" "\${XDG_STATE_HOME}" "$XDG_STATE_HOME" ]
-      [ home home username username stateHome stateHome ];
+  expandUserPaths = expandVariables (
+    userVariables
+    // {
+      "$XDG_STATE_HOME" = stateHome;
+      "\${XDG_STATE_HOME}" = stateHome;
+    }
+  );
   cursorSuffixes = config.environment.profileRelativeEnvVars.XCURSOR_PATH or [ ];
   cursorPath = expandUserPaths (
     lib.concatStringsSep ":" (
