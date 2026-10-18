@@ -42,6 +42,31 @@ let
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
   };
+  appearanceGuest =
+    extra:
+    (evaluate {
+      home-manager.users.alice.programs.nook.sandboxes.dev = {
+        inheritAppearance = lib.mkForce true;
+      }
+      // extra;
+    }).home-manager.users.alice.programs.nook.sandboxes.dev._container;
+  portalTheme = appearanceGuest { };
+  qtTheme = appearanceGuest {
+    nixosModules = [
+      {
+        qt.enable = true;
+        qt.platformTheme = "qt5ct";
+      }
+    ];
+  };
+  explicitTheme = appearanceGuest {
+    environment.QT_QPA_PLATFORMTHEME = "custom";
+  };
+  themeReachesApplications =
+    guest: theme:
+    guest.environment.variables.QT_QPA_PLATFORMTHEME == theme
+    && guest.systemd.globalEnvironment.QT_QPA_PLATFORMTHEME == theme
+    && lib.elem ''"QT_QPA_PLATFORMTHEME=${theme}"'' guest.systemd.user.settings.Manager.DefaultEnvironment;
   service = "sandbox-ualice-dev@";
   guest = automatic.home-manager.users.alice.programs.nook;
 in
@@ -53,6 +78,9 @@ assert lib.any (
 assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
+assert themeReachesApplications portalTheme "xdgdesktopportal";
+assert themeReachesApplications qtTheme "qt5ct";
+assert themeReachesApplications explicitTheme "custom";
 assert guest.sandboxes.dev._container.networking.hostName == "";
 assert !(guest.sandboxes.dev._container.environment.etc ? hostname);
 assert

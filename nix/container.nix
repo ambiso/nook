@@ -34,10 +34,10 @@ let
     XCURSOR_PATH = "${pkgs.adwaita-icon-theme}/share/icons";
   }
   // lib.optionalAttrs (portals || inheritAppearance) {
-    # GTK and Qt must query the Settings portal on the private session bus
-    # rather than the guest's unrelated dconf defaults.
+    # Prefer the Settings portal when no guest theme is configured. Read Qt's
+    # merged value so transient services also honor the guest's Qt module.
     GDK_DEBUG = "portals";
-    QT_QPA_PLATFORMTHEME = "xdgdesktopportal";
+    QT_QPA_PLATFORMTHEME = config.environment.variables.QT_QPA_PLATFORMTHEME;
   }
   // lib.optionalAttrs portals {
     GTK_USE_PORTAL = "1";
@@ -153,9 +153,16 @@ in
     pkgs.adwaita-icon-theme
     pkgs.shared-mime-info
   ];
-  environment.variables = sessionEnvironment // {
-    XCURSOR_PATH = lib.mkForce sessionEnvironment.XCURSOR_PATH;
-  };
+  environment.variables =
+    sessionEnvironment
+    // lib.optionalAttrs (portals || inheritAppearance) {
+      QT_QPA_PLATFORMTHEME = lib.mkDefault "xdgdesktopportal";
+    }
+    # Explicit profile environment values retain ordinary module priority.
+    // environment
+    // {
+      XCURSOR_PATH = lib.mkForce sessionEnvironment.XCURSOR_PATH;
+    };
   # Entries run as transient user services without sourcing /etc/profile.
   # Seed the user manager's inherited environment as well as login shells.
   systemd.globalEnvironment = sessionEnvironment;
