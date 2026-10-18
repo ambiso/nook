@@ -105,6 +105,10 @@ in
       devices = [
         "/dev/kvm"
         # "/dev/kfd" # AMD ROCm compute; gpu = true already exposes /dev/dri.
+        # NVIDIA CUDA device access (driver libraries are also needed):
+        # "/dev/nvidia0" # Select the GPU; use nvidia1, etc. for other GPUs.
+        # "/dev/nvidiactl"
+        # "/dev/nvidia-uvm"
       ];
     };
     sandboxes.zotero = {
@@ -282,6 +286,13 @@ Only Wayland is forwarded from the host display. `startX = true` starts a privat
 each instance; the host's X11 sockets are not exposed.
 GPU and audio access are enabled by default and can be disabled with `gpu` and
 `audio`. Other devices are selected with `devices` or `devicePatterns`.
+The commented CUDA entries show device forwarding only. CUDA also needs
+NVIDIA user-space driver libraries compatible with the host driver, plus the
+CUDA libraries required by the application; see
+[NVIDIA's container documentation](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/docker-specialized.html#driver-capabilities).
+Nook's `gpu` option currently supplies Mesa rather than the NVIDIA driver
+libraries. The CUDA example has not been tested on NVIDIA hardware.
+
 For hardware-accelerated VMs, the dev example explicitly forwards `/dev/kvm`.
 It is not forwarded by default. The host must provide KVM and the owner must
 have read/write access to that device; Nook does not grant missing host access.
