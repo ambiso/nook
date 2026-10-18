@@ -199,6 +199,15 @@ pkgs.testers.runNixOSTest {
           stateDirectory = ".sandbox/dev";
           hostSessionBus = false;
           inheritAppearance = false;
+          homeManagerModules = [
+            {
+              dconf.settings."org/gnome/desktop/interface" = {
+                gtk-theme = "Adwaita-dark";
+                icon-theme = "Adwaita";
+                color-scheme = "prefer-dark";
+              };
+            }
+          ];
         };
       };
     };
@@ -381,6 +390,11 @@ pkgs.testers.runNixOSTest {
               enable = true;
               enableDefaultConfig = false;
               settings."example.invalid".hostname = "example.invalid";
+            };
+            dconf.settings."org/gnome/desktop/interface" = {
+              gtk-theme = "Adwaita-dark";
+              icon-theme = "Adwaita";
+              color-scheme = "prefer-dark";
             };
             home.file.activation-check.text = "activated\n";
             home.file.legacy-edit.text = "new managed configuration\n";

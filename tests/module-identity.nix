@@ -50,6 +50,9 @@ assert lib.any (
 assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
+assert guest.sandboxes.dev._container.programs.dconf.enable;
+assert lib.elem pkgs.dconf guest.sandboxes.dev._container.services.dbus.packages;
+assert lib.elem pkgs.dconf guest.sandboxes.dev._container.systemd.packages;
 assert automatic.systemd.services.${service}.serviceConfig.RuntimeDirectory == "nook-ualice-dev-%i";
 assert explicit.systemd.services ? ${service};
 assert !(automatic.systemd.services ? "sandbox-4242-dev@");

@@ -48,6 +48,18 @@ with subtest("automatic host UID/GID allocation and independent guest IDs"):
     machine.succeed(
         f"test $(stat -c %g /home/bob/.sandbox/dev/home/owner-check) = {host_gid}"
     )
+    for key, value in {
+        "gtk-theme": "Adwaita-dark",
+        "icon-theme": "Adwaita",
+        "color-scheme": "prefer-dark",
+    }.items():
+        configured = machine.succeed(
+            "su - bob -c "
+            + shlex.quote(
+                "nk launch dev --join -- dconf read /org/gnome/desktop/interface/" + key
+            )
+        ).strip()
+        assert configured == repr(value), (key, configured)
     machine.succeed("systemctl stop sandbox-ubob-dev@main.service")
 
 
@@ -79,6 +91,13 @@ try:
     )
     machine.succeed("cmp /tmp/ns-a /tmp/ns-b")
     inside("true", "--join")
+    # Activation and later application writes both use the guest's dconf service.
+    assert (
+        inside("dconf read /org/gnome/desktop/interface/gtk-theme").strip()
+        == "'Adwaita-dark'"
+    )
+    inside("dconf write /org/gnome/desktop/interface/cursor-size 32")
+    assert inside("dconf read /org/gnome/desktop/interface/cursor-size").strip() == "32"
     # The compatibility wrapper maps the backing home even when the shell's
     # logical current directory reaches it through a host symlink.
     project_directory = "/home/alice/.sandbox/check/home/Projects/project's %h/subdir"

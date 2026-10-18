@@ -67,6 +67,10 @@ in
     + lib.concatMapStrings (server: "nameserver ${server}\n") config.networking.nameservers;
   services.resolved.enable = false;
   services.dbus.enable = true;
+  # Home Manager's dconf.settings activation writes through the native user
+  # bus. Installing dconf in the app profile alone does not register its D-Bus
+  # activation file or systemd user service with the guest system.
+  programs.dconf.enable = lib.mkDefault true;
   # This root (and its logs) is discarded at shutdown. There is no historical
   # log set to rotate or journal catalog to rebuild for `journalctl -x`.
   services.logrotate.enable = lib.mkDefault false;

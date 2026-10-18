@@ -73,6 +73,8 @@
               bubblewrap
               pkg-config
               dbus.dev
+              dbus
+              dconf
             ];
             # Pin the compiler as well as Cargo, even when the user's PATH also
             # contains rustup shims or a dependency has its own toolchain file.

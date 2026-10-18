@@ -39,6 +39,12 @@ without invoking a real host service. Module checks cover automatic UID/GID
 allocation and migration errors for removed host-ID overrides. The expanded
 VM regression has only been evaluated.
 
+The dconf activation fix was checked with two private D-Bus sessions inside dev:
+an empty service registry reproduces `ServiceUnknown`, and registering dconf's
+service allows theme, icon, and color-scheme writes to persist in a disposable
+home. Module assertions cover the guest D-Bus/systemd registration. The expanded
+Home Manager dconf VM regression has only been evaluated.
+
 ## Rust checks
 
 Run these commands from the repository root inside a development sandbox:
@@ -53,6 +59,7 @@ cargo build --locked
 python3 tests/tui-smoke.py target/debug/nk
 python3 tests/delete-mount-smoke.py target/debug/nk
 python3 tests/entry-identity-smoke.py target/debug/nk
+python3 tests/dconf-smoke.py
 ```
 
 `nix develop` provides build tools; it does not itself isolate execution from

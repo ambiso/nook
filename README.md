@@ -216,6 +216,9 @@ These settings apply inside dev, including its named and ephemeral instances.
 The host's Home Manager settings are not copied into the guest. Nook supplies
 the username, home directory, and state version automatically and activates the
 modules once per successful generation in each instance's home.
+Guest Home Manager modules can also set `dconf.settings`: Nook provides the
+native guest dconf service. This configures the guest's database, separately
+from the Settings portal used to follow the host's appearance.
 
 ## Use
 
