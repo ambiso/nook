@@ -91,6 +91,8 @@ try:
     )
     machine.succeed("cmp /tmp/ns-a /tmp/ns-b")
     inside("true", "--join")
+    assert inside("uname -n").strip() == "check-main"
+    inside("getent hosts check-main")
     # Activation and later application writes both use the guest's dconf service.
     assert (
         inside("dconf read /org/gnome/desktop/interface/gtk-theme").strip()
@@ -164,7 +166,7 @@ try:
     # A completed home skips activation on restart, but a different generation
     # must activate even when it uses the same persistent home. Removing the
     # success marker forces a retry, as after an interrupted activation.
-    cli("launch cache-old -- true")
+    assert cli("launch cache-old -- uname -n").strip() == "cache-workstation"
     cli("stop cache-old")
     cli("launch cache-old -- true")
     cli("stop cache-old")
@@ -526,6 +528,8 @@ for desktop_id, query in [
         "--name review",
     )
     inside("test ! -e ~/build/named-output; test ! -e ~/.cache/sccache/named-cache")
+    assert inside("uname -n", "--name review").strip() == "check-review"
+    inside("getent hosts check-review", "--name review")
     assert (
         inside("cat /etc/machine-id", "--instance n-review").strip() != first_machine_id
     )
@@ -561,6 +565,7 @@ for desktop_id, query in [
         for line in cli("list").splitlines()
         if line.split()[1].startswith("e-")
     )
+    assert inside("uname -n", "--instance " + ephemeral).strip() == "check-" + ephemeral
     cli("stop check --instance " + ephemeral)
     machine.fail("test -e /run/nook-ualice-check-" + ephemeral)
     inside(

@@ -13,6 +13,7 @@ let
       audio = false;
       network = false;
       stateDirectory = ".sandbox/cache-test";
+      nixosModules = [ { networking.hostName = "cache-workstation"; } ];
       homeManagerModules = [
         ({ lib, ... }: {
           home.file.cache-version.text = "${name}\n";

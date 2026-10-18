@@ -355,6 +355,33 @@ impl Profile {
     pub fn guest_gid(&self) -> Result<u32> {
         Ok(self.get("gid")?.parse()?)
     }
+    pub fn hostname(&self, instance: &str) -> Result<String> {
+        if !valid_instance(instance) {
+            return Err("invalid sandbox instance".into());
+        }
+        // Older manifests boot a system with a static "sandbox" hostname.
+        // An empty value in new manifests requests a launch-time default.
+        let configured = self
+            .values
+            .get("hostname")
+            .map_or("sandbox", String::as_str);
+        if !configured.is_empty() {
+            return Ok(configured.into());
+        }
+        let name = self.get("name")?;
+        let instance_name = instance.strip_prefix("n-").unwrap_or(instance);
+        // Profile and instance names are each limited to 24 ASCII characters.
+        // Trimming handles permitted edge hyphens without exceeding DNS's
+        // 63-character label limit or changing stored instance identifiers.
+        let combined = format!("{name}-{instance_name}");
+        let hostname = combined.trim_matches('-');
+        Ok(if hostname.is_empty() {
+            "sandbox".into()
+        } else {
+            hostname.into()
+        })
+    }
+
     pub fn machine(&self, instance: &str) -> Result<String> {
         if !valid_instance(instance) {
             return Err(
@@ -428,6 +455,45 @@ mod tests {
             session_rules: Vec::new(),
             system_rules: Vec::new(),
             pasta: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hostnames_follow_the_template_and_instance_unless_configured() {
+        let mut profile = profile(Path::new("/home/test"), true);
+        assert_eq!(profile.hostname("main").unwrap(), "sandbox");
+        profile.values.insert("hostname".into(), String::new());
+        for (instance, expected) in [
+            ("main", "dev-main"),
+            ("n-project", "dev-project"),
+            ("e-0123456789abcdef", "dev-e-0123456789abcdef"),
+        ] {
+            assert_eq!(profile.hostname(instance).unwrap(), expected);
+        }
+        assert!(profile.hostname("../outside").is_err());
+        profile
+            .values
+            .insert("hostname".into(), "workstation".into());
+        assert_eq!(profile.hostname("n-project").unwrap(), "workstation");
+    }
+
+    #[test]
+    fn generated_hostnames_are_valid_dns_labels_for_edge_case_names() {
+        let mut profile = profile(Path::new("/home/test"), true);
+        profile.values.insert("hostname".into(), String::new());
+        for name in ["-dev-", "---", "a23456789012345678901234"] {
+            profile.values.insert("name".into(), name.into());
+            for instance in ["main", "n-project-", "n---", "n-a23456789012345678901234"] {
+                let hostname = profile.hostname(instance).unwrap();
+                assert!(!hostname.is_empty() && hostname.len() <= 63);
+                assert!(hostname.as_bytes()[0].is_ascii_alphanumeric());
+                assert!(hostname.as_bytes()[hostname.len() - 1].is_ascii_alphanumeric());
+                assert!(
+                    hostname
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                );
+            }
         }
     }
 

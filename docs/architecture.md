@@ -176,6 +176,19 @@ same daemon permissions the owner has, not a separate guest daemon.
 
 ## Networking and hostnames
 
+Nspawn sets each guest's hostname at launch: `<profile>-main`,
+`<profile>-<name>` for named instances, and `<profile>-e-<id>` for ephemeral
+instances. This does not evaluate or build a new NixOS system per instance.
+Leading and trailing hyphens are trimmed to make valid hostname labels.
+The guest leaves `networking.hostName` empty by default so boot preserves this
+runtime hostname. To override it for every instance of a profile:
+
+```nix
+programs.nook.sandboxes.dev.nixosModules = [ {
+  networking.hostName = "workstation";
+} ];
+```
+
 Pasta provides networking in a separate namespace. Host-listener mirroring onto
 guest loopback is disabled, so guest applications can bind ports already used
 on the host. Pasta can still publish guest listeners on available host ports.

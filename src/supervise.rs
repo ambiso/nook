@@ -892,6 +892,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         "--notify-ready=yes".into(),
         "--kill-signal=SIGRTMIN+3".into(),
         format!("--machine={machine}"),
+        format!("--hostname={}", profile.hostname(instance)?),
         format!("--directory={}", root.display()),
         format!("--private-users={uid_offset}:262144"),
         "--private-users-ownership=map".into(),

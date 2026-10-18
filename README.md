@@ -255,6 +255,11 @@ instance running; stopping an ephemeral instance deletes its home.
 or stop it with `--instance e-…`. `--name project` is shorthand for
 `--instance n-project`.
 
+Guest hostnames default to the template and instance name: `dev-main`,
+`dev-project` for `--name project`, or `dev-e-…` for an ephemeral instance.
+These are set at launch; instances reuse the same NixOS build. Set
+`networking.hostName` in `nixosModules` to use a fixed hostname for a profile.
+
 Homes are stored under `${config.xdg.stateHome}/nook/<profile>/home` for main
 instances and `${config.xdg.stateHome}/nook/<profile>/instances/n-<name>/home`
 for named ones. Home Manager fixes this path when it evaluates the profile, so

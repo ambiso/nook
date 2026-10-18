@@ -239,6 +239,7 @@ let
           if cfg.guiEntryPoint == null then "" else "${appPackage}/${lib.removePrefix "/" cfg.guiEntryPoint}";
         entry = entry;
         init = "${container.system.build.toplevel}/init";
+        hostname = container.networking.hostName;
         state = stateRoot;
         persistent = if cfg.persistent then 1 else 0;
         network = if cfg.network then 1 else 0;

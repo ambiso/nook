@@ -51,7 +51,10 @@ in
   boot.isContainer = true;
   boot.isNspawnContainer = true;
   system.stateVersion = "26.05";
-  networking.hostName = "sandbox";
+  # Leave the static hostname unset so nspawn's template/instance hostname
+  # survives boot. Named instances share this system closure; their names are
+  # only known at launch. A guest module can still set a static hostname.
+  networking.hostName = lib.mkDefault "";
   networking.useDHCP = false;
   networking.firewall.enable = false;
   networking.nameservers = [ "169.254.1.1" ];

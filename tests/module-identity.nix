@@ -35,6 +35,9 @@ let
   explicit = evaluate {
     users.users.alice.uid = 4242;
     users.groups.alice.gid = 4343;
+    home-manager.users.alice.programs.nook.sandboxes.dev.nixosModules = [
+      { networking.hostName = "workstation"; }
+    ];
   };
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
@@ -50,6 +53,11 @@ assert lib.any (
 assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
+assert guest.sandboxes.dev._container.networking.hostName == "";
+assert !(guest.sandboxes.dev._container.environment.etc ? hostname);
+assert
+  explicit.home-manager.users.alice.programs.nook.sandboxes.dev._container.networking.hostName
+  == "workstation";
 assert guest.sandboxes.dev._container.programs.dconf.enable;
 assert lib.elem pkgs.dconf guest.sandboxes.dev._container.services.dbus.packages;
 assert lib.elem pkgs.dconf guest.sandboxes.dev._container.systemd.packages;
