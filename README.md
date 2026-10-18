@@ -377,7 +377,7 @@ tests, Miri, and NixOS VM integration tests, and
 
 ## AI assistance
 
-Most of Nook's code and documentation was written with OpenAI Codex. It grew
+Most of Nook's code and documentation was written with AI assistance. It grew
 out of a personal NixOS configuration, where development included desktop use,
 Rust tests, Miri, and headless VM tests. The [development notes](docs/development.md)
 distinguish checks on this extraction from earlier testing. Desktop dialogs,
