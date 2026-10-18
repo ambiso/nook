@@ -127,6 +127,11 @@ in
     };
     sandboxes.steam = {
       packages = [ pkgs.steam ];
+      homeManagerModules = [
+        {
+          home.file.".icons/default".source = "${pkgs.kdePackages.breeze}/share/icons/breeze_cursors";
+        }
+      ];
       guiEntryPoint = "/bin/steam";
       desktopFile = "steam.desktop";
       startX = true;
