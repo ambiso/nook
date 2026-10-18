@@ -62,11 +62,54 @@ let
   explicitTheme = appearanceGuest {
     environment.QT_QPA_PLATFORMTHEME = "custom";
   };
+  preferenceOverrides = {
+    MOZ_ENABLE_WAYLAND = "0";
+    QT_QPA_PLATFORM = "xcb";
+    NIXOS_OZONE_WL = "0";
+    GDK_DEBUG = "fatal-warnings";
+    GTK_USE_PORTAL = "0";
+    GIO_USE_PORTALS = "0";
+    NOTIFY_FORCE_PORTAL = "0";
+    NIXOS_XDG_OPEN_USE_PORTAL = "0";
+    QT_STYLE_OVERRIDE = "breeze";
+    XCURSOR_THEME = "breeze_cursors";
+    XCURSOR_SIZE = "32";
+  };
+  configuredPreferences = appearanceGuest {
+    portals = true;
+    nixosModules = [
+      {
+        environment.variables = preferenceOverrides // {
+          XCURSOR_SIZE = 32;
+          XDG_STATE_HOME = "$HOME/state";
+        };
+        environment.sessionVariables.XCURSOR_PATH = lib.mkBefore [ "/custom/100%/icons" ];
+        environment.profileRelativeSessionVariables.XCURSOR_PATH = [ "/custom-cursors" ];
+        fonts.fontconfig.enable = false;
+      }
+    ];
+  };
+  profilePreferences = appearanceGuest {
+    portals = true;
+    environment = preferenceOverrides // {
+      XCURSOR_PATH = "/preferred/icons:/more/icons";
+    };
+  };
+  unsetPreferences = appearanceGuest {
+    nixosModules = [
+      { environment.variables.GDK_DEBUG = null; }
+    ];
+  };
+  disabledAppearance = automatic.home-manager.users.alice.programs.nook.sandboxes.dev._container;
+  sessionValueReachesApplications =
+    guest: name: value:
+    guest.systemd.globalEnvironment.${name} == value
+    && lib.elem (builtins.toJSON "${name}=${lib.replaceStrings [ "%" ] [ "%%" ] value}") guest.systemd.user.settings.Manager.DefaultEnvironment;
+  cursorPaths = guest: lib.splitString ":" guest.systemd.globalEnvironment.XCURSOR_PATH;
   themeReachesApplications =
     guest: theme:
     guest.environment.variables.QT_QPA_PLATFORMTHEME == theme
-    && guest.systemd.globalEnvironment.QT_QPA_PLATFORMTHEME == theme
-    && lib.elem ''"QT_QPA_PLATFORMTHEME=${theme}"'' guest.systemd.user.settings.Manager.DefaultEnvironment;
+    && sessionValueReachesApplications guest "QT_QPA_PLATFORMTHEME" theme;
   service = "sandbox-ualice-dev@";
   guest = automatic.home-manager.users.alice.programs.nook;
 in
@@ -81,6 +124,37 @@ assert guest.guest.uid == 1000 && guest.guest.gid == 100;
 assert themeReachesApplications portalTheme "xdgdesktopportal";
 assert themeReachesApplications qtTheme "qt5ct";
 assert themeReachesApplications explicitTheme "custom";
+assert lib.all (
+  name:
+  configuredPreferences.environment.variables.${name} == preferenceOverrides.${name}
+  && sessionValueReachesApplications configuredPreferences name preferenceOverrides.${name}
+  && sessionValueReachesApplications profilePreferences name preferenceOverrides.${name}
+) (builtins.attrNames preferenceOverrides);
+assert !configuredPreferences.fonts.fontconfig.enable;
+assert portalTheme.fonts.fontconfig.enable;
+assert !(unsetPreferences.environment.variables ? GDK_DEBUG);
+assert !(unsetPreferences.systemd.globalEnvironment ? GDK_DEBUG);
+assert
+  !lib.any (lib.hasPrefix ''"GDK_DEBUG='') unsetPreferences.systemd.user.settings.Manager.DefaultEnvironment;
+assert !(disabledAppearance.systemd.globalEnvironment ? GDK_DEBUG);
+assert !(disabledAppearance.systemd.globalEnvironment ? GTK_USE_PORTAL);
+assert lib.hasPrefix "/home/alice/.icons:/home/alice/.local/share/icons:"
+  portalTheme.systemd.globalEnvironment.XCURSOR_PATH;
+assert lib.elem "/run/current-system/sw/share/icons" (cursorPaths portalTheme);
+assert lib.elem "/home/alice/.nix-profile/share/icons" (cursorPaths portalTheme);
+assert lib.elem "/home/alice/.local/state/nix/profile/share/icons" (cursorPaths portalTheme);
+assert lib.elem "/etc/profiles/per-user/alice/share/icons" (cursorPaths portalTheme);
+assert lib.hasPrefix "/custom/100%/icons:"
+  configuredPreferences.systemd.globalEnvironment.XCURSOR_PATH;
+assert lib.elem "/run/current-system/sw/custom-cursors" (cursorPaths configuredPreferences);
+assert lib.elem "/home/alice/state/nix/profile/custom-cursors" (cursorPaths configuredPreferences);
+assert sessionValueReachesApplications configuredPreferences "XCURSOR_PATH"
+  configuredPreferences.systemd.globalEnvironment.XCURSOR_PATH;
+assert lib.hasPrefix "/preferred/icons:/more/icons:/home/alice/.icons:"
+  profilePreferences.systemd.globalEnvironment.XCURSOR_PATH;
+assert sessionValueReachesApplications profilePreferences "XCURSOR_PATH"
+  profilePreferences.systemd.globalEnvironment.XCURSOR_PATH;
+assert !lib.hasInfix "$" portalTheme.systemd.globalEnvironment.XCURSOR_PATH;
 assert guest.sandboxes.dev._container.networking.hostName == "";
 assert !(guest.sandboxes.dev._container.environment.etc ? hostname);
 assert

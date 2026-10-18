@@ -20,32 +20,68 @@
   ...
 }:
 let
-  sessionEnvironment = {
-    WAYLAND_DISPLAY = "wayland-0";
+  backendDefaults = {
     MOZ_ENABLE_WAYLAND = "1";
     QT_QPA_PLATFORM = "wayland";
     NIXOS_OZONE_WL = "1";
+  };
+  appearanceDefaults = {
+    GDK_DEBUG = "portals";
+    QT_QPA_PLATFORMTHEME = "xdgdesktopportal";
+  };
+  portalDefaults = {
+    GTK_USE_PORTAL = "1";
+    GIO_USE_PORTALS = "1";
+    NOTIFY_FORCE_PORTAL = "1";
+    NIXOS_XDG_OPEN_USE_PORTAL = "1";
+  };
+  applicationDefaults =
+    backendDefaults
+    // lib.optionalAttrs (portals || inheritAppearance) appearanceDefaults
+    // lib.optionalAttrs portals portalDefaults;
+  requiredEnvironment = {
+    WAYLAND_DISPLAY = "wayland-0";
     XDG_DATA_DIRS = lib.concatStringsSep ":" [
       "${appPackage}/share"
       "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}"
       "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}"
       "/run/current-system/sw/share"
     ];
-    XCURSOR_PATH = "${pkgs.adwaita-icon-theme}/share/icons";
-  }
-  // lib.optionalAttrs (portals || inheritAppearance) {
-    # Prefer the Settings portal when no guest theme is configured. Read Qt's
-    # merged value so transient services also honor the guest's Qt module.
-    GDK_DEBUG = "portals";
-    QT_QPA_PLATFORMTHEME = config.environment.variables.QT_QPA_PLATFORMTHEME;
-  }
-  // lib.optionalAttrs portals {
-    GTK_USE_PORTAL = "1";
-    GIO_USE_PORTALS = "1";
-    NOTIFY_FORCE_PORTAL = "1";
-    NIXOS_XDG_OPEN_USE_PORTAL = "1";
-  }
-  // environment;
+  };
+  sessionVariableNames =
+    builtins.attrNames (
+      backendDefaults // appearanceDefaults // portalDefaults // requiredEnvironment // environment
+    )
+    ++ [
+      "QT_STYLE_OVERRIDE"
+      "XCURSOR_THEME"
+      "XCURSOR_SIZE"
+    ];
+  # Login shells expand these NixOS profile placeholders; systemd manager
+  # environments do not. Resolve the known user paths without evaluating shell
+  # code, retaining the standard home and profile cursor directories.
+  stateHome = lib.replaceStrings [ "\${HOME}" "$HOME" ] [ home home ] (
+    config.environment.variables.XDG_STATE_HOME or "${home}/.local/state"
+  );
+  expandUserPaths =
+    lib.replaceStrings
+      [ "\${HOME}" "$HOME" "\${USER}" "$USER" "\${XDG_STATE_HOME}" "$XDG_STATE_HOME" ]
+      [ home home username username stateHome stateHome ];
+  cursorSuffixes = config.environment.profileRelativeEnvVars.XCURSOR_PATH or [ ];
+  cursorPath = expandUserPaths (
+    lib.concatStringsSep ":" (
+      lib.optional (config.environment.variables ? XCURSOR_PATH) config.environment.variables.XCURSOR_PATH
+      ++ lib.concatMap (
+        profile: map (suffix: "${profile}${suffix}") cursorSuffixes
+      ) config.environment.profiles
+    )
+  );
+  # Read the final option values for both manager environments. This also
+  # respects variables explicitly unset with null in a guest module.
+  sessionEnvironment =
+    lib.filterAttrs (name: _: lib.elem name sessionVariableNames) config.environment.variables
+    // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; };
+
 in
 {
   boot.isContainer = true;
@@ -92,7 +128,7 @@ in
     mode = "0644";
   };
 
-  fonts.fontconfig.enable = true;
+  fonts.fontconfig.enable = lib.mkDefault true;
   # Prefer Japanese glyph variants for the CJK fallback rather than relying
   # on the order of faces in Noto's multilingual collection.
   fonts.fontconfig.defaultFonts = {
@@ -154,15 +190,14 @@ in
     pkgs.shared-mime-info
   ];
   environment.variables =
-    sessionEnvironment
-    // lib.optionalAttrs (portals || inheritAppearance) {
-      QT_QPA_PLATFORMTHEME = lib.mkDefault "xdgdesktopportal";
-    }
-    # Explicit profile environment values retain ordinary module priority.
-    // environment
-    // {
-      XCURSOR_PATH = lib.mkForce sessionEnvironment.XCURSOR_PATH;
-    };
+    lib.mapAttrs (_: lib.mkDefault) applicationDefaults
+    // requiredEnvironment
+    // builtins.removeAttrs environment [ "XCURSOR_PATH" ];
+  # Cursor paths are lists in NixOS. Treat a profile's explicit search path as
+  # preferred directories, while keeping the usual home/profile fallbacks.
+  environment.sessionVariables = lib.optionalAttrs (environment ? XCURSOR_PATH) {
+    XCURSOR_PATH = lib.mkBefore (lib.splitString ":" environment.XCURSOR_PATH);
+  };
   # Entries run as transient user services without sourcing /etc/profile.
   # Seed the user manager's inherited environment as well as login shells.
   systemd.globalEnvironment = sessionEnvironment;

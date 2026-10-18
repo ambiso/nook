@@ -220,6 +220,26 @@ Guest Home Manager modules can also set `dconf.settings`: Nook provides the
 native guest dconf service. This configures the guest's database, separately
 from the Settings portal used to follow the host's appearance.
 
+Backend and portal environment settings are defaults. Override them in a guest
+NixOS module when an application needs a different choice:
+
+```nix
+programs.nook.sandboxes.dev.nixosModules = [
+  ({ lib, ... }: {
+    environment.variables.QT_QPA_PLATFORM = "xcb"; # Requires startX = true.
+    environment.sessionVariables.XCURSOR_PATH = lib.mkBefore [ "/path/to/icons" ];
+    fonts.fontconfig.enable = false; # Optional; enabled by default.
+  })
+];
+```
+
+Cursor lookup includes the guest's `~/.icons`, `~/.local/share/icons`, and NixOS
+profile icon directories. Setting a profile's `environment.XCURSOR_PATH` adds
+preferred directories before those fallbacks. Guest Qt and cursor settings also
+reach apps launched as transient systemd services.
+Portal environment flags control application behavior; the profile's `portals`
+option controls whether Nook grants portal access.
+
 ## Use
 
 ```sh

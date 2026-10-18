@@ -93,6 +93,13 @@ try:
     inside("true", "--join")
     assert inside("uname -n").strip() == "check-main"
     inside("getent hosts check-main")
+    # Transient services receive concrete NixOS cursor search paths, including
+    # the per-home directory used by Home Manager cursor themes.
+    inside("""
+        case "$XCURSOR_PATH" in "$HOME/.icons:$HOME/.local/share/icons:"*) ;; *) exit 1;; esac
+        case ":$XCURSOR_PATH:" in *:/run/current-system/sw/share/icons:*) ;; *) exit 1;; esac
+        case "$XCURSOR_PATH" in *'$HOME'*|*'${HOME}'*|*'$USER'*|*'${XDG_STATE_HOME}'*) exit 1;; esac
+    """)
     # Activation and later application writes both use the guest's dconf service.
     assert (
         inside("dconf read /org/gnome/desktop/interface/gtk-theme").strip()
