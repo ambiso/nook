@@ -660,6 +660,14 @@ for desktop_id, query in [
         for line in machine.succeed(f"cat {old_profile}/profile").splitlines()
         if line.startswith("shell\t")
     )
+    cli("launch fallback -- true")
+    incompatible_unit = "sandbox-ualice-fallback@main.service"
+    incompatible_invocation = machine.succeed(
+        f"systemctl show {incompatible_unit} -p InvocationID --value"
+    ).strip()
+    incompatible_profile = machine.succeed(
+        "readlink -f /run/nook-ualice-fallback-main/profile-root"
+    ).strip()
     assert "\t" in machine.succeed(f"cat {old_profile}/profile").split("activation\t", 1)[1]
     assert "\t" in machine.succeed(f"cat {old_profile}/profile").split("system\t", 1)[1]
     machine.succeed(f"{UPDATED_SYSTEM}/bin/switch-to-configuration test", timeout=120)
@@ -674,6 +682,23 @@ for desktop_id, query in [
         machine.succeed("readlink -f /run/nook-ualice-check-main/profile-root").strip()
         == installed_profile
     )
+    assert (
+        machine.succeed(
+            f"systemctl show {incompatible_unit} -p InvocationID --value"
+        ).strip()
+        == incompatible_invocation
+    )
+    assert (
+        machine.succeed(
+            "readlink -f /run/nook-ualice-fallback-main/profile-root"
+        ).strip()
+        == incompatible_profile
+    )
+    machine.succeed(
+        f"journalctl -b -u {incompatible_unit} --no-pager | "
+        "grep -F 'reload skipped for main: restart required: '"
+    )
+    cli("stop fallback")
     assert (
         machine.succeed(
             "systemctl --machine=sbx-1000-check-main is-active --quiet "

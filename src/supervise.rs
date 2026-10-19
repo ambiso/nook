@@ -199,9 +199,36 @@ fn supervisor_identity(profile: &Profile) -> Result<String> {
     Ok(supervisor_identity)
 }
 
+fn reload_restart_reason(running: &Profile, requested: &Profile) -> Result<Option<String>> {
+    if !requested.values.contains_key("activation") || !requested.values.contains_key("system") {
+        return Err("the installed profile generation does not support in-place reloads".into());
+    }
+    if !running.values.contains_key("activation") || !running.values.contains_key("system") {
+        return Ok(Some(
+            "the running profile predates live reload support".into(),
+        ));
+    }
+    let requested_identity = supervisor_identity(requested)?;
+    let running_identity = match supervisor_identity(running) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return Ok(Some(format!(
+                "the running profile has an older supervisor contract ({error})"
+            )));
+        }
+    };
+    Ok((requested_identity != running_identity)
+        .then(|| "the sandbox supervisor contract changed".into()))
+}
+
+fn restart_required(instance: &str, reason: impl std::fmt::Display) -> Result<i32> {
+    eprintln!("nook-root: reload skipped for {instance}: restart required: {reason}");
+    Ok(0)
+}
+
 #[cfg(test)]
 mod reload_tests {
-    use super::{Profile, supervisor_identity};
+    use super::{Profile, reload_restart_reason, supervisor_identity};
     use std::{fs, path::Path};
 
     fn write_profile(root: &Path) -> Profile {
@@ -284,6 +311,54 @@ mod reload_tests {
             supervisor_identity(&first).unwrap(),
             supervisor_identity(&second).unwrap()
         );
+    }
+
+    #[test]
+    fn incompatible_running_generations_request_a_restart_without_failing_reload() {
+        let root = tempfile::tempdir().unwrap();
+        let mut requested = write_profile(root.path());
+        requested
+            .values
+            .insert("activation".into(), "/nix/store/new-activation".into());
+        requested
+            .values
+            .insert("system".into(), "/nix/store/new-system".into());
+
+        let mut legacy = requested.clone();
+        legacy.values.remove("activation");
+        legacy.values.remove("system");
+        assert!(
+            reload_restart_reason(&legacy, &requested)
+                .unwrap()
+                .unwrap()
+                .contains("predates live reload")
+        );
+
+        let mut older_contract = requested.clone();
+        older_contract.values.remove("supervisorContract");
+        assert!(
+            reload_restart_reason(&older_contract, &requested)
+                .unwrap()
+                .unwrap()
+                .contains("older supervisor contract")
+        );
+
+        let mut changed = requested.clone();
+        changed.values.insert("network".into(), "0".into());
+        assert_eq!(
+            reload_restart_reason(&changed, &requested)
+                .unwrap()
+                .as_deref(),
+            Some("the sandbox supervisor contract changed")
+        );
+        assert!(
+            reload_restart_reason(&requested, &requested)
+                .unwrap()
+                .is_none()
+        );
+
+        requested.values.remove("activation");
+        assert!(reload_restart_reason(&changed, &requested).is_err());
     }
 }
 
@@ -1538,18 +1613,12 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
     // Apply the same pinned host-identity check used by entry. A host account
     // whose numeric IDs changed must restart rather than switching a lifetime
     // that was created with the previous credentials.
-    let running = profile.running_profile_for_reload(instance)?;
-    for profile in [&running, profile] {
-        profile
-            .values
-            .get("activation")
-            .and(profile.values.get("system"))
-            .ok_or("this running profile generation does not support in-place reloads; stop and restart it")?;
-    }
-    if supervisor_identity(profile)? != supervisor_identity(&running)? {
-        return Err(
-            "the sandbox supervisor contract changed; stop and restart this instance".into(),
-        );
+    let running = match profile.running_profile_for_reload(instance) {
+        Ok(running) => running,
+        Err(error) => return restart_required(instance, error),
+    };
+    if let Some(reason) = reload_restart_reason(&running, profile)? {
+        return restart_required(instance, reason);
     }
     if pinned_path == canonical {
         // A crash after repinning but before removing the marker is safe to

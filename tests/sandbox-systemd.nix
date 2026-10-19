@@ -133,14 +133,19 @@ pkgs.testers.runNixOSTest {
     ];
     nixpkgs.pkgs = pkgs.lib.mkForce pkgs;
     specialisation = pkgs.lib.optionalAttrs (!benchmark && !diagnostics) {
-      updated.configuration.home-manager.users.alice.programs.nook.sandboxes.check = {
-        environment.NOOK_TEST_REVISION = pkgs.lib.mkForce "updated";
-        homeManagerModules = [
-          {
-            home.file.reload-version.text = "updated\n";
-            home.packages = [ pkgs.hello ];
-          }
-        ];
+      updated.configuration.home-manager.users.alice.programs.nook.sandboxes = {
+        check = {
+          environment.NOOK_TEST_REVISION = pkgs.lib.mkForce "updated";
+          homeManagerModules = [
+            {
+              home.file.reload-version.text = "updated\n";
+              home.packages = [ pkgs.hello ];
+            }
+          ];
+        };
+        # Exercise the restart-required path while check exercises a compatible
+        # live reload during the same host switch.
+        fallback.network = pkgs.lib.mkForce true;
       };
     };
     services.pipewire.enable = true;

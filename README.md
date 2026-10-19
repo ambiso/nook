@@ -189,7 +189,8 @@ contract is unchanged, Nook reloads the matching sandbox services: the guest run
 `switch-to-configuration switch`, then activates its new Home Manager generation
 and repins the running profile. Changing bind mounts, devices, network, D-Bus
 proxies, host access, persistent-home placement, UID mapping, or other launch-time
-settings is refused until you stop and launch that instance. Shells
+settings skips that instance's reload and logs `restart required` without failing
+the host switch. Stop and launch the instance to apply those changes. Shells
 are package options: set `sandboxes.dev.shell = pkgs.fish`, for example. The
 default shell is Fish.
 
