@@ -89,7 +89,7 @@ impl Instance {
 
 #[derive(Args)]
 struct Stop {
-    #[arg(requires = "all")]
+    #[arg(required_unless_present_any = ["all"], value_name = "PROFILE")]
     profile: Option<String>,
     /// Stop every running instance of PROFILE, or every configured profile if omitted
     #[arg(long)]
@@ -835,5 +835,24 @@ mod tests {
                 "{arguments:?}"
             );
         }
+    }
+
+    #[test]
+    fn stop_accepts_one_profile_or_all() {
+        let cli = Cli::try_parse_from(["nk", "stop", "dev"]).unwrap();
+        let Some(Action::Stop(request)) = cli.command else {
+            panic!("expected stop command");
+        };
+        assert_eq!(request.profile.as_deref(), Some("dev"));
+        assert!(!request.all);
+
+        let cli = Cli::try_parse_from(["nk", "stop", "--all"]).unwrap();
+        let Some(Action::Stop(request)) = cli.command else {
+            panic!("expected stop command");
+        };
+        assert_eq!(request.profile, None);
+        assert!(request.all);
+
+        assert!(Cli::try_parse_from(["nk", "stop"]).is_err());
     }
 }
