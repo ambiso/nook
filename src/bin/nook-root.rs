@@ -2,12 +2,12 @@
 
 use clap::{Args, Parser, Subcommand};
 use nook::{
-    config::{Profile, Result},
+    config::{Profile, Result, owner_key, valid_name},
     supervise,
 };
 use std::{
-    env,
-    path::{Component, PathBuf},
+    env, fs,
+    path::{Component, Path, PathBuf},
 };
 
 #[derive(Parser)]
@@ -35,44 +35,21 @@ struct Target {
 
 #[derive(Args)]
 struct Enter {
-    #[command(flatten)]
-    target: Target,
-    #[arg(long, value_parser = parse_entry_environment)]
-    entry_environment: Vec<String>,
+    #[arg(value_parser = parse_profile_name)]
+    profile: String,
+    instance: String,
     #[arg(long, value_parser = parse_entry_directory)]
     entry_directory: Option<PathBuf>,
     #[arg(last = true)]
     command: Vec<String>,
 }
 
-fn allowed_entry_environment(key: &str) -> bool {
-    [
-        "TERM",
-        "COLORTERM",
-        "TERM_PROGRAM",
-        "TERM_PROGRAM_VERSION",
-        "VTE_VERSION",
-        "LANG",
-        "LANGUAGE",
-        "TZ",
-        "XDG_SESSION_TYPE",
-        "XDG_CURRENT_DESKTOP",
-        "XDG_SESSION_DESKTOP",
-        "DESKTOP_SESSION",
-        "DESKTOP_STARTUP_ID",
-        "XDG_ACTIVATION_TOKEN",
-        "GTK_IM_MODULE",
-        "QT_IM_MODULE",
-        "QT_IM_MODULES",
-        "XMODIFIERS",
-    ]
-    .contains(&key)
-        || key.strip_prefix("LC_").is_some_and(|suffix| {
-            !suffix.is_empty()
-                && suffix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
-        })
+fn parse_profile_name(value: &str) -> std::result::Result<String, String> {
+    if valid_name(value) {
+        Ok(value.to_owned())
+    } else {
+        Err("profile must be 1–24 lowercase letters, digits or hyphens".into())
+    }
 }
 
 fn parse_entry_directory(value: &str) -> std::result::Result<PathBuf, String> {
@@ -84,15 +61,37 @@ fn parse_entry_directory(value: &str) -> std::result::Result<PathBuf, String> {
     }
 }
 
-fn parse_entry_environment(value: &str) -> std::result::Result<String, String> {
-    if value
-        .split_once('=')
-        .is_some_and(|(key, _)| allowed_entry_environment(key))
-    {
-        Ok(value.to_owned())
-    } else {
-        Err("only terminal, locale, desktop and input-method variables may be forwarded".into())
+fn installed_entry_profile(name: &str) -> Result<Profile> {
+    let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
+    let account = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(caller))?
+        .ok_or("authenticated caller has no host account")?;
+    if account.uid.is_root() || account.gid.as_raw() == 0 {
+        return Err("sandbox owner must have non-root UID and primary GID".into());
     }
+    let registered = Path::new("/etc/sandbox/profiles")
+        .join(owner_key(&account.name))
+        .join(name);
+    let declared = fs::canonicalize(&registered).map_err(|error| {
+        format!(
+            "cannot resolve installed profile {}: {error}",
+            registered.display()
+        )
+    })?;
+    if !declared.starts_with("/nix/store/") {
+        return Err("entry accepts only profiles installed by the host module".into());
+    }
+    // Load only after the caller's UID and bounded profile name have selected
+    // a root-managed registry entry. A pkexec client never supplies a path for
+    // the privileged process to open.
+    let profile = Profile::load(&declared)
+        .map_err(|error| format!("cannot load installed profile {name}: {error}"))?;
+    if profile.get("name")? != name
+        || profile.get("username")? != account.name
+        || profile.host_uid()? != caller
+    {
+        return Err("installed profile does not belong to the authenticated caller".into());
+    }
+    Ok(profile)
 }
 
 fn run() -> Result<i32> {
@@ -107,11 +106,11 @@ fn run() -> Result<i32> {
             if env::var_os("PKEXEC_UID").is_none() {
                 return Err("entry requires pkexec authentication".into());
             }
+            let profile = installed_entry_profile(&request.profile)?;
             supervise::enter(
-                &Profile::load(&request.target.profile)?,
-                &request.target.instance,
+                &profile,
+                &request.instance,
                 &request.command,
-                &request.entry_environment,
                 request.entry_directory.as_deref(),
             )
         }
@@ -152,22 +151,10 @@ mod tests {
     }
 
     #[test]
-    fn entry_environment_is_only_guest_ui_data() {
-        for allowed in [
-            "TERM_PROGRAM=terminal",
-            "LC_TIME=ja_JP.UTF-8",
-            "LANG=C.UTF-8",
-        ] {
-            assert!(parse_entry_environment(allowed).is_ok());
-        }
-        for rejected in [
-            "HOME=/",
-            "LD_PRELOAD=/tmp/library.so",
-            "DISPLAY=:77",
-            "DBUS_SESSION_BUS_ADDRESS=host",
-            "LC_=x",
-        ] {
-            assert!(parse_entry_environment(rejected).is_err());
+    fn entry_accepts_a_profile_name_not_a_path() {
+        assert_eq!(parse_profile_name("dev-1").unwrap(), "dev-1");
+        for rejected in ["", "../dev", "/nix/store/profile", "Dev", "dev_name"] {
+            assert!(parse_profile_name(rejected).is_err());
         }
     }
 

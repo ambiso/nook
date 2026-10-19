@@ -1410,7 +1410,6 @@ pub fn enter(
     profile: &Profile,
     instance: &str,
     command: &[String],
-    environment: &[String],
     directory: Option<&Path>,
 ) -> Result<i32> {
     let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
@@ -1446,7 +1445,11 @@ pub fn enter(
         profile.get("username")?,
         profile.machine(instance)?
     );
-    let mut run = Command::new("systemd-run");
+    // The entry client controls neither executable lookup nor the environment
+    // of this root process. systemd-run sends the requested command to the
+    // already-running guest user manager, where it executes as the guest user.
+    let mut run = Command::new("/run/current-system/sw/bin/systemd-run");
+    run.env_clear();
     run.args([
         "--user",
         "--machine",
@@ -1463,11 +1466,12 @@ pub fn enter(
         "--pipe"
     });
     run.arg("--working-directory").arg(directory);
-    for value in environment {
-        run.arg(format!("--setenv={value}"));
-    }
     run.arg("--").arg(profile.get("entry")?).args(command);
-    Ok(run.status()?.code().unwrap_or(1))
+    Ok(run
+        .status()
+        .map_err(|error| format!("cannot invoke trusted systemd-run: {error}"))?
+        .code()
+        .unwrap_or(1))
 }
 
 pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {

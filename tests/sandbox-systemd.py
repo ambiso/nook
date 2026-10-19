@@ -293,7 +293,7 @@ try:
     )
     machine.succeed(
         as_owner(
-            'TERM_PROGRAM=sandbox-test LC_TIME=ja_JP.UTF-8 sandbox launch check -- bash -ec \'test "$TERM_PROGRAM" = sandbox-test; test "$LC_TIME" = ja_JP.UTF-8\''
+            'TERM_PROGRAM=sandbox-test LC_TIME=ja_JP.UTF-8 sandbox launch check -- bash -ec \'test "${TERM_PROGRAM-unset}" = unset; test "${LC_TIME-unset}" = unset\''
         )
     )
     # Both protocols are bound on the host. The guest must have an independent

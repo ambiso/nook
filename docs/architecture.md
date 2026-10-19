@@ -238,8 +238,9 @@ machine is `sbx-<uid>-<profile>-<instance>`. Activation output is copied into th
 host unit's journal so errors remain available when a failed guest root is
 removed.
 
-The separate `nook-root` entry helper accepts only an installed immutable profile and verifies
-the caller's UID before entering its namespaces. It runs commands as the guest
+The separate `nook-root` entry helper accepts only a bounded profile name, resolves it through the
+authenticated caller's root-managed profile registry, and then verifies the immutable profile and
+caller's UID before entering its namespaces. It does not forward the caller's environment. It runs commands as the guest
 owner through that guest's user manager. Permission to join does not authorize
 other root helper modes.
 

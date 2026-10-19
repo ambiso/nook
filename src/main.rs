@@ -214,36 +214,6 @@ fn parse_name(value: &str) -> std::result::Result<String, String> {
     }
 }
 
-fn allowed_entry_environment(key: &str) -> bool {
-    [
-        "TERM",
-        "COLORTERM",
-        "TERM_PROGRAM",
-        "TERM_PROGRAM_VERSION",
-        "VTE_VERSION",
-        "LANG",
-        "LANGUAGE",
-        "TZ",
-        "XDG_SESSION_TYPE",
-        "XDG_CURRENT_DESKTOP",
-        "XDG_SESSION_DESKTOP",
-        "DESKTOP_SESSION",
-        "DESKTOP_STARTUP_ID",
-        "XDG_ACTIVATION_TOKEN",
-        "GTK_IM_MODULE",
-        "QT_IM_MODULE",
-        "QT_IM_MODULES",
-        "XMODIFIERS",
-    ]
-    .contains(&key)
-        || key.strip_prefix("LC_").is_some_and(|suffix| {
-            !suffix.is_empty()
-                && suffix
-                    .bytes()
-                    .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
-        })
-}
-
 fn find_profile<'a>(profiles: &'a [Profile], name: &str) -> Result<&'a Profile> {
     profiles
         .iter()
@@ -380,7 +350,7 @@ fn launch(
     enter
         .arg(privileged_helper()?)
         .arg("enter")
-        .arg(&profile.dir)
+        .arg(profile.get("name")?)
         .arg(instance);
     if !gui {
         // pkexec replaces the host working directory. Translate it while still
@@ -390,13 +360,6 @@ fn launch(
                 .arg("--entry-directory")
                 .arg(running.guest_working_directory(instance, &directory)?);
         }
-    }
-    // pkexec intentionally sanitizes its environment. Carry the small UI
-    // allowlist as validated data, then set it only on the guest user service.
-    for (key, value) in env::vars().filter(|(key, _)| allowed_entry_environment(key)) {
-        enter
-            .arg("--entry-environment")
-            .arg(format!("{key}={value}"));
     }
     enter.arg("--").args(arguments);
     Ok(enter.status()?.code().unwrap_or(1))

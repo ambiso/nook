@@ -72,14 +72,14 @@ def main():
             ]:
                 (profile / name).write_text("")
             profiles.append(profile)
-        mock = root / "bin"
-        mock.mkdir()
+        mock = root / "run/current-system/sw/bin"
+        mock.mkdir(parents=True)
         log = root / "entry.json"
         systemd_run = mock / "systemd-run"
         systemd_run.write_text(
             f"#!{Path(sys.executable).resolve()}\nimport json, os, sys\n"
             "from pathlib import Path\n"
-            "Path(os.environ['NOOK_ENTRY_LOG']).write_text(json.dumps(sys.argv[1:]))\n"
+            f"Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
         )
         systemd_run.chmod(0o700)
         command = [
@@ -112,13 +112,11 @@ def main():
             "--",
             str(binary),
             "enter",
-            str(installed),
+            "check",
             "main",
         ]
         environment = os.environ | {
-            "PATH": str(mock) + os.pathsep + os.environ["PATH"],
             "PKEXEC_UID": str(owner.pw_uid),
-            "NOOK_ENTRY_LOG": str(log),
         }
 
         def invoke(**changes):
@@ -137,7 +135,18 @@ def main():
         assert arguments[-2:] == ["/running-entry", "/running-shell"], arguments
         log.unlink()
         result = invoke(PKEXEC_UID=str(owner.pw_uid + 1))
-        assert result.returncode == 1 and "does not own" in result.stderr, result.stderr
+        assert result.returncode == 1, result.stderr
+        assert not log.exists()
+        untrusted_path = command.copy()
+        untrusted_path[-2] = "/etc"
+        result = subprocess.run(
+            untrusted_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 2 and "profile must be" in result.stderr, result.stderr
         assert not log.exists()
         # Entry authorization must never reach either system-service mode.
         for mode in ["serve", "reload"]:
