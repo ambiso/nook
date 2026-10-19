@@ -133,8 +133,15 @@ pkgs.testers.runNixOSTest {
     ];
     nixpkgs.pkgs = pkgs.lib.mkForce pkgs;
     specialisation = pkgs.lib.optionalAttrs (!benchmark && !diagnostics) {
-      updated.configuration.home-manager.users.alice.programs.nook.sandboxes.check.environment.NOOK_TEST_REVISION =
-        pkgs.lib.mkForce "updated";
+      updated.configuration.home-manager.users.alice.programs.nook.sandboxes.check = {
+        environment.NOOK_TEST_REVISION = pkgs.lib.mkForce "updated";
+        homeManagerModules = [
+          {
+            home.file.reload-version.text = "updated\n";
+            home.packages = [ pkgs.hello ];
+          }
+        ];
+      };
     };
     services.pipewire.enable = true;
     services.pipewire.pulse.enable = true;

@@ -89,7 +89,13 @@ and only then repins the running profile. Joins continue to use that pinned
 generation. If either switch fails, the old pin remains active. Bind mounts,
 devices, network and proxy setup, host access, persistent-home placement, and
 other launch-time settings cannot be changed live; Nook refuses the reload and
-requires a stop and launch. The root helper still authorizes the caller against
+requires a stop and launch. Compatibility compares the actual parsed values,
+including ordinary binds, device lines, and device-pattern lines, rather than
+hashes. Guest UID/GID, home, and portal app identity also belong to that contract;
+entry commands, environment, system, and activation paths may change in place.
+Profile and environment records use a versioned byte-length framing so tabs and
+newlines in values cannot become additional fields. Legacy line records remain
+readable for existing generations. The root helper still authorizes the caller against
 the current installed profile before entering the guest.
 
 Shell and command launches translate the host's physical current directory

@@ -1,5 +1,4 @@
 use crate::config::{Mount, Profile, Result, error, safe_mount, valid_instance};
-use fs2::FileExt;
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
@@ -118,21 +117,39 @@ impl Drop for Helpers {
     }
 }
 
+// Compare parsed launch-time inputs, including devices and hotplug patterns.
+// Guest system/activation, entry commands and environment switch in place;
+// host credentials/name are checked separately by check_running_identity.
+// Runtime Wayland sockets and allocated subordinate IDs belong to this lifetime.
 fn supervisor_identity(profile: &Profile) -> Result<String> {
-    let read = |name: &str| -> std::result::Result<String, Box<dyn std::error::Error>> {
-        let mut value = fs::read_to_string(profile.dir.join(name))?;
-        if !value.ends_with('\n') {
-            value.push('\n');
-        }
-        Ok(value)
+    let mut supervisor_identity = String::new();
+    let append = |identity: &mut String, key: &str, value: &str| {
+        use std::fmt::Write;
+        let _ = writeln!(identity, "{key}\t{}\t{}", value.len(), value);
     };
-    let mut identity = String::new();
-    for name in ["mounts", "session-rules", "system-rules", "pasta"] {
-        identity.push_str(&format!("{name}\t"));
-        identity.push_str(&read(name)?);
-    }
+    let mount_value = profile
+        .mounts
+        .iter()
+        .map(|mount| format!("{}\0{}\0{}\0", mount.mode, mount.source, mount.target))
+        .collect::<String>();
+    append(&mut supervisor_identity, "mounts", &mount_value);
+    append(
+        &mut supervisor_identity,
+        "session-rules",
+        &profile.session_rules.join("\n"),
+    );
+    append(
+        &mut supervisor_identity,
+        "system-rules",
+        &profile.system_rules.join("\n"),
+    );
+    append(&mut supervisor_identity, "pasta", &profile.pasta.join("\n"));
     for key in [
         "hostname",
+        "home",
+        "uid",
+        "gid",
+        "portalAppId",
         "state",
         "persistent",
         "network",
@@ -142,12 +159,95 @@ fn supervisor_identity(profile: &Profile) -> Result<String> {
         "portals",
         "inheritAppearance",
     ] {
-        identity.push_str(key);
-        identity.push('\t');
-        identity.push_str(profile.get(key)?);
-        identity.push('\n');
+        append(&mut supervisor_identity, key, profile.get(key)?);
     }
-    Ok(identity)
+    Ok(supervisor_identity)
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::{Profile, supervisor_identity};
+    use std::{fs, path::Path};
+
+    fn write_profile(root: &Path) -> Profile {
+        fs::write(
+            root.join("mounts"),
+            "rw\t/source\t/target\ndevice\t/dev/dri\t/dev/dri\ndevice-pattern\t/dev/hidraw*\t/dev/hidraw*\n",
+        )
+        .unwrap();
+        for name in ["session-rules", "system-rules", "pasta"] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        fs::write(root.join("environment"), "").unwrap();
+        fs::write(
+            root.join("profile"),
+            concat!(
+                "name\tdev\n",
+                "username\tuser\n",
+                "uid\t1000\n",
+                "gid\t100\n",
+                "home\t/home/user\n",
+                "portalAppId\teu.example.dev\n",
+                "hostname\tdev\n",
+                "state\t/state\n",
+                "persistent\t1\n",
+                "network\t1\n",
+                "audio\t1\n",
+                "nix\t1\n",
+                "hostSessionBus\t1\n",
+                "portals\t0\n",
+                "inheritAppearance\t0\n",
+            ),
+        )
+        .unwrap();
+        Profile::load(root).unwrap()
+    }
+
+    #[test]
+    fn supervisor_identity_includes_every_device_mount_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = write_profile(root.path());
+        let identity = supervisor_identity(&profile).unwrap();
+        assert!(
+            identity.contains("device-pattern")
+                && identity.contains("device\0/dev/dri\0/dev/dri\0")
+                && identity.contains("rw\0/source\0/target\0")
+        );
+    }
+
+    #[test]
+    fn supervisor_identity_covers_launch_inputs_and_frames_values() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = write_profile(root.path());
+        let identity = supervisor_identity(&profile).unwrap();
+        for key in profile
+            .values
+            .keys()
+            .filter(|key| !["name", "username"].contains(&key.as_str()))
+        {
+            let mut changed = profile.clone();
+            changed.values.insert(key.clone(), "changed".into());
+            assert_ne!(identity, supervisor_identity(&changed).unwrap(), "{key}");
+        }
+        for index in 0..profile.mounts.len() {
+            let mut changed = profile.clone();
+            changed.mounts[index].source.push_str("-changed");
+            assert_ne!(identity, supervisor_identity(&changed).unwrap());
+        }
+        let mut first = profile.clone();
+        first
+            .values
+            .insert("hostname".into(), "x\nstate\t6\t/state".into());
+        let mut second = profile.clone();
+        second.values.insert("hostname".into(), "x".into());
+        second
+            .values
+            .insert("state".into(), "/state\nstate\t6\t/state".into());
+        assert_ne!(
+            supervisor_identity(&first).unwrap(),
+            supervisor_identity(&second).unwrap()
+        );
+    }
 }
 
 fn print_command_output(output: &std::process::Output, action: &str) -> Result<()> {
@@ -1309,10 +1409,17 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         .create(true)
         .truncate(false)
         .open(runtime.join("reload.lock"))?;
-    lock.try_lock_exclusive()?;
+    lock.try_lock()?;
     let pinned_path = fs::canonicalize(runtime.join("profile-root"))?;
     let running = Profile::load(&pinned_path)?;
     profile.check_running_identity(&running)?;
+    for profile in [&running, profile] {
+        profile
+            .values
+            .get("activation")
+            .and(profile.values.get("system"))
+            .ok_or("this running profile generation does not support in-place reloads; stop and restart it")?;
+    }
     if supervisor_identity(profile)? != supervisor_identity(&running)? {
         return Err(
             "the sandbox supervisor contract changed; stop and restart this instance".into(),
@@ -1469,6 +1576,9 @@ mod tests {
             fs::read_to_string(directory.path().join(offset.to_string())).unwrap(),
             legacy
         );
+        // Other parallel tests spawn children. Release explicitly so a child
+        // between fork and exec cannot briefly retain this test's flock.
+        old._lock.unlock().unwrap();
         drop(old);
         let migrated = uid_range_at(directory.path(), stable, legacy, false).unwrap();
         assert_eq!(migrated.uid_offset, offset);
@@ -1482,6 +1592,7 @@ mod tests {
         );
         assert!(directory.path().join(format!(".owner-{stable}")).exists());
         assert!(uid_range_at(directory.path(), stable, legacy, false).is_err());
+        migrated._lock.unlock().unwrap();
         drop(migrated);
         // A later change to the host UID must still find the same range.
         let restarted = uid_range_at(directory.path(), stable, "sbx-5252-dev-main", false).unwrap();

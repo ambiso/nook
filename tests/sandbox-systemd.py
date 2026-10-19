@@ -638,12 +638,16 @@ for desktop_id, query in [
     invocation = machine.succeed(
         f"systemctl show {unit} -p InvocationID --value"
     ).strip()
-    running_profile = machine.succeed(
+    old_profile = machine.succeed(
         "readlink -f /run/nook-ualice-check-main/profile-root"
     ).strip()
-    old_shell = machine.succeed(
-        "readlink -f /run/nook-ualice-check-main/profile-root"
-    ).strip()
+    old_shell = next(
+        line.split("\t", 2)[2]
+        for line in machine.succeed(f"cat {old_profile}/profile").splitlines()
+        if line.startswith("shell\t")
+    )
+    assert "\t" in machine.succeed(f"cat {old_profile}/profile").split("activation\t", 1)[1]
+    assert "\t" in machine.succeed(f"cat {old_profile}/profile").split("system\t", 1)[1]
     machine.succeed(f"{UPDATED_SYSTEM}/bin/switch-to-configuration test", timeout=120)
     installed_profile = machine.succeed(
         "readlink -f /etc/sandbox/profiles/ualice/check"
@@ -663,13 +667,24 @@ for desktop_id, query in [
         ).strip()
         == ""
     )
+    new_system = next(
+        line.split("\t", 2)[2]
+        for line in machine.succeed(f"cat {installed_profile}/profile").splitlines()
+        if line.startswith("system\t")
+    )
     assert machine.succeed(
         "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
-        "printf %s \"$NOOK_TEST_REVISION\""
-    ).strip() == "updated"
+        "/run/current-system/sw/bin/readlink -f /run/current-system"
+    ).strip() == new_system
     assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "updated"
-    assert cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip() != old_shell
-    assert cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip() != old_shell
+    assert inside("cat ~/reload-version").strip() == "updated"
+    assert inside("hello").strip() == "Hello, world!"
+    assert (
+        cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip() != old_shell
+    )
+    assert (
+        cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip() != old_shell
+    )
 
     # An explicit stop/start picks up the newly installed profile.
     cli("stop check")

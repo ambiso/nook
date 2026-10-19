@@ -41,7 +41,7 @@ pub fn safe_mount(source: &str, target: &str) -> Result<()> {
     for path in [source, target] {
         let p = Path::new(path);
         if !p.is_absolute()
-            || path.contains(['\n', '\r', '\t', ':', '\\'])
+            || path.contains(['\0', '\n', '\r', '\t', ':', '\\'])
             || p.components()
                 .any(|x| matches!(x, std::path::Component::ParentDir))
         {
@@ -67,13 +67,34 @@ fn lines(path: &Path) -> Result<Vec<String>> {
         .collect())
 }
 fn pairs(path: &Path) -> Result<BTreeMap<String, String>> {
+    let contents = fs::read_to_string(path)?;
     let mut out = BTreeMap::new();
-    for line in lines(path)? {
-        let (k, v) = line
+    let framed = contents.starts_with("nook-pairs-v1\n");
+    let mut remaining = contents
+        .strip_prefix("nook-pairs-v1\n")
+        .unwrap_or(&contents);
+    while !remaining.is_empty() {
+        let (key, rest) = remaining
             .split_once('\t')
             .ok_or("expected tab-separated key and value")?;
-        if out.insert(k.to_string(), v.to_string()).is_some() {
-            return Err(format!("duplicate key {k}").into());
+        if key.is_empty() || key.contains(['\n', '\r', '\t']) {
+            return Err(format!("invalid profile key {key:?}").into());
+        }
+        let value;
+        if framed {
+            let (length, rest) = rest.split_once('\t').ok_or("missing value length")?;
+            let length: usize = length.parse()?;
+            value = rest.get(..length).ok_or("invalid profile value length")?;
+            remaining = rest[length..]
+                .strip_prefix('\n')
+                .ok_or("missing record terminator")?;
+        } else {
+            // Old generations use unframed, single-line values. The version
+            // header keeps legacy values containing tabs unambiguous.
+            (value, remaining) = rest.split_once('\n').unwrap_or((rest, ""));
+        }
+        if out.insert(key.to_string(), value.to_string()).is_some() {
+            return Err(format!("duplicate key {key}").into());
         }
     }
     Ok(out)
@@ -443,6 +464,36 @@ pub fn error(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn framed_pairs_preserve_control_characters_and_reject_bad_frames() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("pairs");
+        let value = "é\nother\t4\tfake\r\0";
+        fs::write(
+            &path,
+            format!(
+                "nook-pairs-v1\nkey\t{}\t{value}\nother\t4\treal\n",
+                value.len()
+            ),
+        )
+        .unwrap();
+        let decoded = pairs(&path).unwrap();
+        assert_eq!(decoded["key"], value);
+        assert_eq!(decoded["other"], "real");
+        assert_eq!(decoded.len(), 2);
+        for malformed in [
+            "nook-pairs-v1\nkey\t99\tshort\n",
+            "nook-pairs-v1\nkey\t1\té\n",
+            "nook-pairs-v1\nkey\t1\tx",
+            "nook-pairs-v1\nkey\t1\tx\nkey\t1\ty\n",
+        ] {
+            fs::write(&path, malformed).unwrap();
+            assert!(pairs(&path).is_err(), "{malformed:?}");
+        }
+        fs::write(&path, "key\tlegacy\twith tabs\n").unwrap();
+        assert_eq!(pairs(&path).unwrap()["key"], "legacy\twith tabs");
+    }
 
     fn profile(state: &Path, persistent: bool) -> Profile {
         Profile {
