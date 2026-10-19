@@ -49,6 +49,10 @@ fn command(preceding: &[OsString], default_catalog: PathBuf) -> clap::Command {
         .and_then(|(_, m)| m.try_get_one::<String>("profile").ok().flatten())
         .cloned();
     let mut command = crate::Cli::command();
+    // Hide shorthand candidates while still parsing aliases already typed.
+    command = command
+        .mut_subcommands(|sub| sub.visible_alias(None).visible_aliases(Vec::<&str>::new()))
+        .mut_subcommand("launch", |sub| sub.aliases(["l", "start", "s"]));
     for action in ["launch", "gui", "shell", "stop", "delete"] {
         command = command.mut_subcommand(action, |sub| {
             // Preserve argument order: mut_arg removes and re-appends positionals.
@@ -168,6 +172,22 @@ mod tests {
         assert!(
             !suggestions(&["nk", "stop", "dev", "--e"], &directory).contains(&"--ephemeral".into())
         );
+    }
+
+    #[test]
+    fn command_completions_prefer_full_names_over_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("profiles");
+        add_profile(&directory, "dev", temp.path());
+        assert_eq!(
+            suggestions(&["nk", ""], &directory)
+                .into_iter()
+                .filter(|command| ["l", "start", "s"].contains(&command.to_str().unwrap_or("")))
+                .count(),
+            0
+        );
+        assert!(suggestions(&["nk", ""], &directory).contains(&"launch".into()));
+        assert!(suggestions(&["nk", "la"], &directory).contains(&"launch".into()));
     }
 
     #[test]

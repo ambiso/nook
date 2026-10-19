@@ -63,7 +63,27 @@ _clap_dynamic_completer_{name}
 
     for shell in ["bash", "zsh", "fish"]:
         for name in ["nk", "sandbox"]:
+            if shell == "fish":
+                script = (
+                    f"source {package}/share/fish/vendor_completions.d/{name}.fish; "
+                    f"set --local words {name} l; complete --do-complete \"$words\""
+                )
+                result = subprocess.run(
+                    ["fish", "-c", script], env=env, check=True,
+                    capture_output=True, text=True, timeout=15,
+                )
+                commands = {
+                    line.split("\t", 1)[0].split(":", 1)[0]
+                    for line in result.stdout.splitlines()
+                }
+                assert "launch" in commands, (shell, name, commands)
+                assert not ({"l", "start", "s"} & commands), (shell, name, commands)
+            else:
+                commands = candidates(shell, [name, ""])
+                assert "launch" in commands, (shell, name, commands)
+                assert not ({"l", "start", "s"} & commands), (shell, name, commands)
             assert "dev" in candidates(shell, [name, "launch", "d"]), (shell, name)
+            assert "dev" in candidates(shell, [name, "l", "d"]), (shell, name)
             assert "--ephemeral" in candidates(shell, [name, "launch", "dev", "--e"])
             assert "--all" in candidates(shell, [name, "stop", "dev", "--a"])
             assert "--yes" in candidates(shell, [name, "delete", "dev", "--y"])
