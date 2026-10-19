@@ -32,6 +32,8 @@ use nix::{
 };
 use std::{os::fd::AsFd, sync::Arc};
 
+const SUPERVISOR_CONTRACT: &str = "1";
+
 fn frontend_executable() -> Result<PathBuf> {
     let current = env::current_exe()?;
     let name = current.file_name().and_then(|name| name.to_str());
@@ -44,6 +46,20 @@ fn frontend_executable() -> Result<PathBuf> {
         .parent()
         .ok_or("privileged helper has no parent directory")?
         .join(binary))
+}
+
+fn check_supervisor_executable(profile: &Profile) -> Result<()> {
+    if profile.get("supervisorContract")? != SUPERVISOR_CONTRACT {
+        return Err(
+            "unsupported sandbox supervisor contract; stop and restart the instance".into(),
+        );
+    }
+    let declared = profile.immutable_store_path("supervisorExecutable")?;
+    let current = fs::canonicalize(env::current_exe()?)?;
+    if declared != current {
+        return Err("profile belongs to a different sandbox supervisor executable".into());
+    }
+    Ok(())
 }
 
 // Credential changes are confined to the single-threaded supervisor. Socket
@@ -133,8 +149,10 @@ impl Drop for Helpers {
 }
 
 // Compare parsed launch-time inputs, including devices and hotplug patterns.
-// Guest system/activation, entry commands and environment switch in place;
-// host credentials/name are checked separately by check_running_identity.
+// Guest system/activation, entry commands and environment switch in place.
+// The explicit contract and supervisor executable force a restart whenever the
+// implementation changes unless a future migration deliberately says otherwise.
+// Host credentials/name are checked separately by check_running_identity.
 // Runtime Wayland sockets and allocated subordinate IDs belong to this lifetime.
 fn supervisor_identity(profile: &Profile) -> Result<String> {
     let mut supervisor_identity = String::new();
@@ -173,6 +191,8 @@ fn supervisor_identity(profile: &Profile) -> Result<String> {
         "hostSessionBus",
         "portals",
         "inheritAppearance",
+        "supervisorContract",
+        "supervisorExecutable",
     ] {
         append(&mut supervisor_identity, key, profile.get(key)?);
     }
@@ -212,6 +232,8 @@ mod reload_tests {
                 "hostSessionBus\t1\n",
                 "portals\t0\n",
                 "inheritAppearance\t0\n",
+                "supervisorContract\t1\n",
+                "supervisorExecutable\t/nix/store/test-nook/bin/.nook-root-wrapped\n",
             ),
         )
         .unwrap();
@@ -970,9 +992,10 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         return Err("the nspawn supervisor runs only through its installed system service".into());
     }
     let canonical = fs::canonicalize(&profile.dir)?;
-    if !canonical.starts_with("/nix/store") {
+    if !canonical.starts_with("/nix/store/") {
         return Err("system services require an immutable Nix store profile".into());
     }
+    check_supervisor_executable(profile)?;
     // Named homes can be deleted while stopped. Keep the owner-side lifecycle
     // lock until this supervisor exits, so deletion and startup never overlap.
     let _storage_lock = if instance.starts_with("n-") {
@@ -1482,9 +1505,10 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         return Err("invalid sandbox instance".into());
     }
     let canonical = fs::canonicalize(&profile.dir)?;
-    if !canonical.starts_with("/nix/store") {
+    if !canonical.starts_with("/nix/store/") {
         return Err("system services require an immutable Nix store profile".into());
     }
+    check_supervisor_executable(profile)?;
     let runtime = profile.supervisor_runtime(instance)?;
     let lock = OpenOptions::new()
         .read(true)
@@ -1497,7 +1521,7 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
     // Apply the same pinned host-identity check used by entry. A host account
     // whose numeric IDs changed must restart rather than switching a lifetime
     // that was created with the previous credentials.
-    let running = profile.running_profile(instance)?;
+    let running = profile.running_profile_for_reload(instance)?;
     for profile in [&running, profile] {
         profile
             .values
@@ -1511,6 +1535,11 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         );
     }
     if pinned_path == canonical {
+        match fs::remove_file(runtime.join("reload-failed")) {
+            Ok(()) => (),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
         return Ok(0);
     }
     let machine = profile.machine(instance)?;
@@ -1523,15 +1552,27 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         return Ok(0);
     }
 
+    // Publish the failure state before changing either guest generation. If
+    // this process fails or is killed, entry remains closed until a successful
+    // retry or a full restart removes the root-owned runtime directory.
+    let reload_failed = runtime.join("reload-failed");
+    fs::write(&reload_failed, canonical.as_os_str().as_encoded_bytes())?;
+
     let new_system = profile.immutable_store_path("system")?;
     let current_system = running.immutable_store_path("system")?;
     if current_system != new_system {
+        let switch = fs::canonicalize(new_system.join("bin/switch-to-configuration"))?;
+        if !switch.starts_with("/nix/store/") {
+            return Err(
+                "guest switch executable must resolve within the immutable Nix store".into(),
+            );
+        }
         let output = Command::new("systemd-run")
             .arg("--machine")
             .arg(&machine)
             .arg("--wait")
             .arg("--pipe")
-            .arg(new_system.join("bin/switch-to-configuration"))
+            .arg(switch)
             .arg("switch")
             .output()?;
         print_command_output(&output, "guest NixOS switch")?;
@@ -1569,6 +1610,7 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
             .arg(&canonical)
             .stdout(Stdio::null()),
     )?;
+    fs::remove_file(reload_failed)?;
     Ok(0)
 }
 

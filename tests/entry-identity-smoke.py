@@ -134,6 +134,16 @@ def main():
         assert f"{owner.pw_name}@sbx-{owner.pw_uid}-check-main" in arguments
         assert arguments[-2:] == ["/running-entry", "/running-shell"], arguments
         log.unlink()
+        failed = runtime / "reload-failed"
+        failed.write_text("incomplete generation")
+        result = invoke()
+        assert result.returncode == 1 and "last live reload failed" in result.stderr, (
+            result.returncode,
+            result.stdout,
+            result.stderr,
+        )
+        assert not log.exists()
+        failed.unlink()
         result = invoke(PKEXEC_UID=str(owner.pw_uid + 1))
         assert result.returncode == 1, result.stderr
         assert not log.exists()

@@ -136,11 +136,22 @@ fn resolve_owner(values: &mut BTreeMap<String, String>) -> Result<()> {
 
 impl Profile {
     pub fn running_profile(&self, instance: &str) -> Result<Self> {
+        let runtime = self.supervisor_runtime(instance)?;
+        if runtime.join("reload-failed").exists() {
+            return Err(
+                "the last live reload failed; retry it or restart the instance before entering"
+                    .into(),
+            );
+        }
+        self.running_profile_for_reload(instance)
+    }
+
+    pub fn running_profile_for_reload(&self, instance: &str) -> Result<Self> {
         // This GC root is published by the root supervisor in its root-owned
         // RuntimeDirectory, not in the owner's writable session directory.
         let runtime = self.supervisor_runtime(instance)?;
         let directory = fs::canonicalize(runtime.join("profile-root"))?;
-        if !directory.starts_with("/nix/store") {
+        if !directory.starts_with("/nix/store/") {
             return Err("running profile must be an immutable Nix store path".into());
         }
         let running = Self::load(&directory)?;
@@ -181,10 +192,22 @@ impl Profile {
 
     pub fn immutable_store_path(&self, key: &str) -> Result<PathBuf> {
         let path = PathBuf::from(self.get(key)?);
-        if !path.starts_with("/nix/store/") || !path.is_absolute() {
+        if !path.starts_with("/nix/store/")
+            || !path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
             return Err(format!("{key} must be an immutable Nix store path").into());
         }
-        Ok(path)
+        let canonical = fs::canonicalize(&path)?;
+        if !canonical.starts_with("/nix/store/") {
+            return Err(format!("{key} must resolve within the immutable Nix store").into());
+        }
+        Ok(canonical)
     }
 
     pub fn owner_key(&self) -> Result<String> {
@@ -612,6 +635,20 @@ mod tests {
         running.values.insert("uid".into(), "1000".into());
         running.values.insert("name".into(), "vr".into());
         assert!(installed.check_running_identity(&running).is_err());
+    }
+
+    #[test]
+    fn immutable_paths_reject_lexical_store_escapes_before_resolution() {
+        let mut profile = profile(Path::new("/home/test"), true);
+        for value in [
+            "/nix/store/example/../../../tmp/payload",
+            "/nix/store/example/./payload",
+            "/tmp/payload",
+            "relative",
+        ] {
+            profile.values.insert("system".into(), value.into());
+            assert!(profile.immutable_store_path("system").is_err(), "{value}");
+        }
     }
 
     #[test]

@@ -146,6 +146,14 @@ sockets are excluded. `startX = true` starts a private
 applications needing X11; guest `:0` refers to that server. Separate network
 namespaces also keep host abstract X11 sockets out of reach.
 
+The direct Wayland connection includes ordinary clipboard protocols. A GUI
+application in a sandbox can therefore replace the host clipboard and may read
+clipboard data when the compositor grants it selection access. The read-only
+socket bind does not restrict messages sent over the socket. Do not treat the
+host clipboard as a secret boundary while a GUI-capable sandbox is running;
+strong clipboard isolation requires compositor policy or a Wayland protocol
+proxy that filters clipboard globals.
+
 Start GUI-capable instances from a Wayland session. An instance first started
 without a Wayland socket must be stopped and started from that session to gain
 one. GPU and audio access default to enabled and can be disabled per profile.

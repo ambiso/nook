@@ -242,6 +242,8 @@ let
           gid
           ;
         identityVersion = 2;
+        supervisorContract = 1;
+        supervisorExecutable = "${launcher}/bin/.nook-root-wrapped";
         shell = "${appPackage}/bin/${shell}";
         gui =
           if cfg.guiEntryPoint == null then "" else "${appPackage}/${lib.removePrefix "/" cfg.guiEntryPoint}";
