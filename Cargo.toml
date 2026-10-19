@@ -11,6 +11,7 @@ name = "nk"
 path = "src/main.rs"
 
 [dependencies]
+fs2 = "0.4"
 clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 crossterm = "0.29"

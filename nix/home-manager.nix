@@ -239,6 +239,8 @@ let
           if cfg.guiEntryPoint == null then "" else "${appPackage}/${lib.removePrefix "/" cfg.guiEntryPoint}";
         entry = entry;
         init = "${container.system.build.toplevel}/init";
+        activation = activation;
+        system = "${container.system.build.toplevel}";
         hostname = container.networking.hostName;
         state = stateRoot;
         persistent = if cfg.persistent then 1 else 0;
@@ -251,6 +253,25 @@ let
         inheritAppearance = if cfg.inheritAppearance then 1 else 0;
         portalAppId = "eu.ambiso.sandbox.profile_${lib.replaceStrings [ "-" ] [ "_" ] name}";
       });
+      # Exact text is deliberate: it describes the supervisor's launch-time
+      # contract, not a store path. Matching hashes permits an unsafe reload.
+      supervisorIdentity = textPairs {
+        mounts = builtins.hashString "sha256" (
+          lib.concatMapStrings (m: "${if m.readOnly then "ro" else "rw"}\t${m.source}\t${m.target}\n") mounts
+        );
+        sessionRules = builtins.hashString "sha256" (lib.concatStringsSep "\n" (lib.unique sessionRules));
+        systemRules = builtins.hashString "sha256" (lib.concatStringsSep "\n" (rules cfg.systemBusPolicies));
+        pasta = builtins.hashString "sha256" (lib.concatStringsSep "\n" cfg.networkArgs);
+        hostname = container.networking.hostName;
+        state = stateRoot;
+        persistent = if cfg.persistent then 1 else 0;
+        network = if cfg.network then 1 else 0;
+        audio = if cfg.audio then 1 else 0;
+        nix = if cfg.nix || hm != null then 1 else 0;
+        hostSessionBus = if cfg.hostSessionBus then 1 else 0;
+        portals = if cfg.portals then 1 else 0;
+        inheritAppearance = if cfg.inheritAppearance then 1 else 0;
+      };
       mountFile = pkgs.writeText "sandbox-mounts-${name}" (
         lib.concatMapStrings (m: "${if m.readOnly then "ro" else "rw"}\t${m.source}\t${m.target}\n") mounts
         + lib.concatMapStrings (path: "device\t${path}\t${path}\n") (
@@ -270,6 +291,7 @@ let
         ln -s ${pkgs.writeText "session-bus-rules" (lib.concatStringsSep "\n" (lib.unique sessionRules))} "$out/session-rules"
         ln -s ${pkgs.writeText "system-bus-rules" (lib.concatStringsSep "\n" (rules cfg.systemBusPolicies))} "$out/system-rules"
         ln -s ${pkgs.writeText "pasta-options" (lib.concatStringsSep "\n" cfg.networkArgs)} "$out/pasta"
+        ln -s ${pkgs.writeText "sandbox-supervisor-identity-${name}" supervisorIdentity} "$out/supervisor-identity"
       '';
     in
     {

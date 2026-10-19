@@ -1,4 +1,5 @@
-use crate::config::{Mount, Profile, Result, error, safe_mount};
+use crate::config::{Mount, Profile, Result, error, safe_mount, valid_instance};
+use fs2::FileExt;
 use std::{
     ffi::CString,
     fs::{self, File, OpenOptions},
@@ -115,6 +116,54 @@ impl Drop for Helpers {
                 .status();
         }
     }
+}
+
+fn supervisor_identity(profile: &Profile) -> Result<String> {
+    let read = |name: &str| -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut value = fs::read_to_string(profile.dir.join(name))?;
+        if !value.ends_with('\n') {
+            value.push('\n');
+        }
+        Ok(value)
+    };
+    let mut identity = String::new();
+    for name in ["mounts", "session-rules", "system-rules", "pasta"] {
+        identity.push_str(&format!("{name}\t"));
+        identity.push_str(&read(name)?);
+    }
+    for key in [
+        "hostname",
+        "state",
+        "persistent",
+        "network",
+        "audio",
+        "nix",
+        "hostSessionBus",
+        "portals",
+        "inheritAppearance",
+    ] {
+        identity.push_str(key);
+        identity.push('\t');
+        identity.push_str(profile.get(key)?);
+        identity.push('\n');
+    }
+    Ok(identity)
+}
+
+fn print_command_output(output: &std::process::Output, action: &str) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let mut message = format!("{action} failed with status {}", output.status);
+    if !output.stdout.is_empty() {
+        message.push('\n');
+        message.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+    if !output.stderr.is_empty() {
+        message.push('\n');
+        message.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    Err(message.into())
 }
 fn user_command(profile: &Profile, exe: &str) -> Result<Command> {
     let mut c = Command::new("setpriv");
@@ -1241,6 +1290,96 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         }));
     }
 }
+
+pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
+    if !geteuid().is_root() {
+        return Err("the reload helper runs only through its installed system service".into());
+    }
+    if !valid_instance(instance) {
+        return Err("invalid sandbox instance".into());
+    }
+    let canonical = fs::canonicalize(&profile.dir)?;
+    if !canonical.starts_with("/nix/store") {
+        return Err("system services require an immutable Nix store profile".into());
+    }
+    let runtime = profile.supervisor_runtime(instance)?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(runtime.join("reload.lock"))?;
+    lock.try_lock_exclusive()?;
+    let pinned_path = fs::canonicalize(runtime.join("profile-root"))?;
+    let running = Profile::load(&pinned_path)?;
+    profile.check_running_identity(&running)?;
+    if supervisor_identity(profile)? != supervisor_identity(&running)? {
+        return Err(
+            "the sandbox supervisor contract changed; stop and restart this instance".into(),
+        );
+    }
+    if pinned_path == canonical {
+        return Ok(0);
+    }
+    let machine = profile.machine(instance)?;
+    let output = Command::new("systemctl")
+        .arg("is-active")
+        .arg("--quiet")
+        .arg(profile.unit(instance)?)
+        .output()?;
+    if !output.status.success() {
+        return Ok(0);
+    }
+
+    let new_system = profile.immutable_store_path("system")?;
+    let current_system = running.immutable_store_path("system")?;
+    if current_system != new_system {
+        let output = Command::new("systemd-run")
+            .arg("--machine")
+            .arg(&machine)
+            .arg("--wait")
+            .arg("--pipe")
+            .arg(new_system.join("bin/switch-to-configuration"))
+            .arg("switch")
+            .output()?;
+        print_command_output(&output, "guest NixOS switch")?;
+    }
+
+    let new_activation = profile.immutable_store_path("activation")?;
+    let old_activation = running.immutable_store_path("activation")?;
+    if old_activation != new_activation {
+        let output = Command::new("systemd-run")
+            .arg("--user")
+            .arg("--machine")
+            .arg(format!("{}@{machine}", profile.get("username")?))
+            .arg("--wait")
+            .arg("--pipe")
+            .env("HOME", profile.get("home")?)
+            .env("USER", profile.get("username")?)
+            .env(
+                "XDG_RUNTIME_DIR",
+                format!("/run/user/{}", profile.guest_uid()?),
+            )
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path=/run/user/{}/bus", profile.guest_uid()?),
+            )
+            .arg(new_activation)
+            .output()?;
+        print_command_output(&output, "Home Manager activation")?;
+    }
+
+    command_ok(
+        Command::new("nix-store")
+            .arg("--add-root")
+            .arg(runtime.join("profile-root"))
+            .args(["--indirect", "--realise"])
+            .arg(&canonical)
+            .stdout(Stdio::null()),
+    )?;
+    Ok(0)
+}
+
 // Connecting from this separate owner-UID process ensures that SO_PEERCRED at
 // the host Nix daemon identifies the real owner, rather than a shifted guest
 // UID. The two directions close independently so protocol EOF is preserved.

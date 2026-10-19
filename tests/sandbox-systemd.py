@@ -632,8 +632,8 @@ for desktop_id, query in [
     """)
     inside("timeout 5 pw-cli info 0; timeout 5 pactl info")
 
-    # A real configuration switch must leave the process and pinned generation
-    # intact. Joining through the new wrapper must still execute the old shell.
+    # A compatible host switch reloads the guest in place. The supervisor process
+    # stays intact while the pinned profile advances to the new generation.
     unit = "sandbox-ualice-check@main.service"
     invocation = machine.succeed(
         f"systemctl show {unit} -p InvocationID --value"
@@ -641,33 +641,35 @@ for desktop_id, query in [
     running_profile = machine.succeed(
         "readlink -f /run/nook-ualice-check-main/profile-root"
     ).strip()
-    old_shell = next(
-        line.split("\t", 1)[1]
-        for line in machine.succeed(f"cat {running_profile}/profile").splitlines()
-        if line.startswith("shell\t")
-    )
+    old_shell = machine.succeed(
+        "readlink -f /run/nook-ualice-check-main/profile-root"
+    ).strip()
     machine.succeed(f"{UPDATED_SYSTEM}/bin/switch-to-configuration test", timeout=120)
+    installed_profile = machine.succeed(
+        "readlink -f /etc/sandbox/profiles/ualice/check"
+    ).strip()
     assert (
         machine.succeed(f"systemctl show {unit} -p InvocationID --value").strip()
         == invocation
     )
     assert (
         machine.succeed("readlink -f /run/nook-ualice-check-main/profile-root").strip()
-        == running_profile
+        == installed_profile
     )
     assert (
-        machine.succeed("readlink -f /etc/sandbox/profiles/ualice/check").strip()
-        != running_profile
+        machine.succeed(
+            "systemctl --machine=sbx-1000-check-main is-active --quiet "
+            "sandbox-ready.service"
+        ).strip()
+        == ""
     )
-    assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "original"
-    assert (
-        cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip()
-        == old_shell
-    )
-    assert (
-        cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip()
-        == old_shell
-    )
+    assert machine.succeed(
+        "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
+        "printf %s \"$NOOK_TEST_REVISION\""
+    ).strip() == "updated"
+    assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "updated"
+    assert cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip() != old_shell
+    assert cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip() != old_shell
 
     # An explicit stop/start picks up the newly installed profile.
     cli("stop check")

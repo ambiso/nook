@@ -37,9 +37,13 @@ in
         let
           service = {
             description = "Sandbox ${p.name} (%i), owned by ${p.username}";
-            # A rebuild publishes the next boot's definition. Running guests keep
-            # their pinned closure until the owner explicitly stops or restarts them.
+            # A rebuild publishes the next boot's definition. Compatible running
+            # guests switch in place; incompatible guests must stop and restart.
             restartIfChanged = false;
+            # A host switch asks a compatible running guest to switch in place.
+            # Any launch-time supervisor change is refused by nk --reload and
+            # still requires an explicit stop and launch.
+            reloadIfChanged = true;
             requires = [ "systemd-machined.service" ];
             after = [ "systemd-machined.service" ];
             path = [
@@ -57,6 +61,7 @@ in
               Type = "notify";
               NotifyAccess = "main";
               ExecStart = "${p.launcher}/bin/nk --serve ${p.profile._profile} %i";
+              ExecReload = "${p.launcher}/bin/nk --reload ${p.profile._profile} %i";
               RuntimeDirectory = "nook-${p.owner}-${p.name}-%i";
               RuntimeDirectoryMode = "0711";
               StateDirectory = "sandbox/uid-ranges";

@@ -134,7 +134,7 @@ impl Profile {
         Ok(running)
     }
 
-    fn check_running_identity(&self, running: &Self) -> Result<()> {
+    pub fn check_running_identity(&self, running: &Self) -> Result<()> {
         if running.host_uid()? != self.host_uid()?
             || running.host_gid()? != self.host_gid()?
             || running.values.get("username") != self.values.get("username")
@@ -156,6 +156,14 @@ impl Profile {
 
     pub fn host_identity(&self) -> Result<String> {
         Ok(format!("{}\t{}\n", self.host_uid()?, self.host_gid()?))
+    }
+
+    pub fn immutable_store_path(&self, key: &str) -> Result<PathBuf> {
+        let path = PathBuf::from(self.get(key)?);
+        if !path.starts_with("/nix/store/") || !path.is_absolute() {
+            return Err(format!("{key} must be an immutable Nix store path").into());
+        }
+        Ok(path)
     }
 
     pub fn owner_key(&self) -> Result<String> {

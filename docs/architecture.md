@@ -80,12 +80,17 @@ Fresh homes, changed generations, and failed activations run activation again.
 Use systemd services for work needed at every boot. Remove the success marker
 before restarting to force reactivation.
 
-Rebuilds leave running instances alone (`restartIfChanged = false`). Changes to
-guest packages, services, and permissions take effect when you stop and launch
-an instance again. Running instances hold Nix GC roots so their current
-configuration stays available. Joining them, including through GUI and shell
-wrappers, uses that pinned generation. The root helper still authorizes the
-caller against the currently installed profile before entering the older guest.
+Rebuilds do not restart running instances (`restartIfChanged = false`). If a
+service's launch-time supervisor contract is unchanged, NixOS requests an
+`ExecReload`. That root helper holds a per-instance reload lock, verifies the
+installed and pinned immutable profile identities, runs the guest's new
+`switch-to-configuration switch`, activates the new Home Manager generation,
+and only then repins the running profile. Joins continue to use that pinned
+generation. If either switch fails, the old pin remains active. Bind mounts,
+devices, network and proxy setup, host access, persistent-home placement, and
+other launch-time settings cannot be changed live; Nook refuses the reload and
+requires a stop and launch. The root helper still authorizes the caller against
+the current installed profile before entering the guest.
 
 Shell and command launches translate the host's physical current directory
 when it lies within the selected instance's backing home. Symlink aliases work;
