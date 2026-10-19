@@ -41,7 +41,7 @@ in
             # guests switch in place; incompatible guests must stop and restart.
             restartIfChanged = false;
             # A host switch asks a compatible running guest to switch in place.
-            # Any launch-time supervisor change is refused by nk --reload and
+            # Any launch-time supervisor change is refused by nook-root reload and
             # still requires an explicit stop and launch.
             reloadIfChanged = true;
             requires = [ "systemd-machined.service" ];
@@ -60,8 +60,8 @@ in
             serviceConfig = {
               Type = "notify";
               NotifyAccess = "main";
-              ExecStart = "${p.launcher}/bin/nk --serve ${p.profile._profile} %i";
-              ExecReload = "${p.launcher}/bin/nk --reload ${p.profile._profile} %i";
+              ExecStart = "${p.launcher}/bin/nook-root serve ${p.profile._profile} %i";
+              ExecReload = "${p.launcher}/bin/nook-root reload ${p.profile._profile} %i";
               RuntimeDirectory = "nook-${p.owner}-${p.name}-%i";
               RuntimeDirectoryMode = "0711";
               StateDirectory = "sandbox/uid-ranges";
@@ -106,8 +106,8 @@ in
           pkgs.xdg-desktop-portal-gtk
         ];
     security.polkit.enablePkexecWrapper = lib.mkIf (profiles != [ ]) true;
-    # The Rust helper checks PKEXEC_UID against the immutable, installed
-    # profile. Its privileged entry point can only join as that profile's user.
+    # Only the narrow privileged helper is authorized. It checks PKEXEC_UID
+    # against the immutable installed profile and exposes no public CLI modes.
     security.polkit.extraConfig =
       lib.concatMapStrings (username: ''
         polkit.addRule(function(action, subject) {
@@ -115,7 +115,7 @@ in
               && action.id === "org.freedesktop.policykit.exec"
               && action.lookup("program") === "${
                 users.${username}.programs.nook.package
-              }/bin/.nk-wrapped") {
+              }/bin/.nook-root-wrapped") {
             return polkit.Result.YES;
           }
         });

@@ -75,7 +75,7 @@ cargo deny --locked check licenses
 cargo build --locked
 python3 tests/tui-smoke.py target/debug/nk
 python3 tests/delete-mount-smoke.py target/debug/nk
-python3 tests/entry-identity-smoke.py target/debug/nk
+python3 tests/entry-identity-smoke.py target/debug/nook-root
 python3 tests/dconf-smoke.py
 ```
 

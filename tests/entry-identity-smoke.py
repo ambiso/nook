@@ -111,7 +111,7 @@ def main():
             str(pinned),
             "--",
             str(binary),
-            "--enter",
+            "enter",
             str(installed),
             "main",
         ]
@@ -139,6 +139,18 @@ def main():
         result = invoke(PKEXEC_UID=str(owner.pw_uid + 1))
         assert result.returncode == 1 and "does not own" in result.stderr, result.stderr
         assert not log.exists()
+        # Entry authorization must never reach either system-service mode.
+        for mode in ["serve", "reload"]:
+            privileged = command[:-3] + [mode, str(installed), "main"]
+            result = subprocess.run(
+                privileged,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            assert result.returncode == 1, result.stderr
+            assert "restricted to guest entry" in result.stderr, result.stderr
         for uid, gid in [
             (owner.pw_uid + 1, owner.pw_gid),
             (owner.pw_uid, owner.pw_gid + 1),

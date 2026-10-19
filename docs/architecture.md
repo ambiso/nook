@@ -82,7 +82,7 @@ before restarting to force reactivation.
 
 Rebuilds do not restart running instances (`restartIfChanged = false`). If a
 service's launch-time supervisor contract is unchanged, NixOS requests an
-`ExecReload`. That root helper holds a per-instance reload lock, verifies the
+`ExecReload`. The narrow `nook-root` helper holds a per-instance reload lock, verifies the
 installed and pinned immutable profile identities, runs the guest's new
 `switch-to-configuration switch`, activates the new Home Manager generation,
 and only then repins the running profile. Joins continue to use that pinned
@@ -95,8 +95,12 @@ hashes. Guest UID/GID, home, and portal app identity also belong to that contrac
 entry commands, environment, system, and activation paths may change in place.
 Profile and environment records use a versioned byte-length framing so tabs and
 newlines in values cannot become additional fields. Legacy line records remain
-readable for existing generations. The root helper still authorizes the caller against
-the current installed profile before entering the guest.
+readable for existing generations. The public `nk` CLI contains no supervisor,
+reload, or privileged-entry mode. Polkit authorizes only `nook-root`, whose
+entry subcommand verifies the caller against the current installed profile.
+Its system-service subcommands reject every invocation carrying pkexec
+credentials. Unprivileged portal and Nix proxy helpers remain in `nk` and are
+started only after the supervisor drops to the sandbox owner's credentials.
 
 Shell and command launches translate the host's physical current directory
 when it lies within the selected instance's backing home. Symlink aliases work;
@@ -234,7 +238,7 @@ machine is `sbx-<uid>-<profile>-<instance>`. Activation output is copied into th
 host unit's journal so errors remain available when a failed guest root is
 removed.
 
-The root entry helper accepts only an installed immutable profile and verifies
+The separate `nook-root` entry helper accepts only an installed immutable profile and verifies
 the caller's UID before entering its namespaces. It runs commands as the guest
 owner through that guest's user manager. Permission to join does not authorize
 other root helper modes.

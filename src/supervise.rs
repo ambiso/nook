@@ -1,13 +1,14 @@
-use crate::config::{Mount, Profile, Result, error, safe_mount, valid_instance};
+use crate::config::{Mount, Profile, Result, safe_mount, valid_instance};
 use std::{
+    env,
     ffi::CString,
     fs::{self, File, OpenOptions},
-    io::Read,
+    io::{self, IsTerminal, Read},
     os::{
         fd::AsRawFd,
         unix::{
             fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::{UnixDatagram, UnixListener, UnixStream},
+            net::{UnixDatagram, UnixStream},
         },
     },
     path::{Path, PathBuf},
@@ -30,6 +31,20 @@ use nix::{
     },
 };
 use std::{os::fd::AsFd, sync::Arc};
+
+fn frontend_executable() -> Result<PathBuf> {
+    let current = env::current_exe()?;
+    let name = current.file_name().and_then(|name| name.to_str());
+    let binary = if name == Some(".nook-root-wrapped") {
+        ".nk-wrapped"
+    } else {
+        "nk"
+    };
+    Ok(current
+        .parent()
+        .ok_or("privileged helper has no parent directory")?
+        .join(binary))
+}
 
 // Credential changes are confined to the single-threaded supervisor. Socket
 // forwarding runs in a separate unprivileged process, so another thread can
@@ -411,7 +426,7 @@ fn prepare_portals(
 
     let mut query = user_command(
         profile,
-        std::env::current_exe()?
+        frontend_executable()?
             .to_str()
             .ok_or("invalid executable")?,
     )?;
@@ -1188,7 +1203,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         })?;
         let mut c = user_command(
             profile,
-            std::env::current_exe()?
+            frontend_executable()?
                 .to_str()
                 .ok_or("invalid executable path")?,
         )?;
@@ -1391,6 +1406,70 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     }
 }
 
+pub fn enter(
+    profile: &Profile,
+    instance: &str,
+    command: &[String],
+    environment: &[String],
+    directory: Option<&Path>,
+) -> Result<i32> {
+    let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
+    if caller != profile.host_uid()? {
+        return Err("caller does not own this sandbox profile".into());
+    }
+    let registered = PathBuf::from(format!(
+        "/etc/sandbox/profiles/{}/{}",
+        profile.owner_key()?,
+        profile.get("name")?
+    ));
+    let declared = fs::canonicalize(registered)?;
+    if !declared.starts_with("/nix/store/") || declared != fs::canonicalize(&profile.dir)? {
+        return Err("entry helper accepts only profiles installed by the host module".into());
+    }
+    // Authorization uses today's installed profile. Entry must use the guest's
+    // pinned generation, which can intentionally outlive a host rebuild.
+    let running = profile.running_profile(instance)?;
+    let profile = &running;
+    let home = Path::new(profile.get("home")?);
+    let directory = directory.unwrap_or(home);
+    if !directory.starts_with(home) {
+        return Err("entry directory must be within the selected sandbox's home".into());
+    }
+    let default_shell = [profile.get("shell")?.to_owned()];
+    let command = if command.is_empty() {
+        &default_shell
+    } else {
+        command
+    };
+    let machine = format!(
+        "{}@{}",
+        profile.get("username")?,
+        profile.machine(instance)?
+    );
+    let mut run = Command::new("systemd-run");
+    run.args([
+        "--user",
+        "--machine",
+        &machine,
+        "--quiet",
+        "--wait",
+        "--collect",
+        "--service-type=exec",
+        "--expand-environment=no",
+    ]);
+    run.arg(if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        "--pty"
+    } else {
+        "--pipe"
+    });
+    run.arg("--working-directory").arg(directory);
+    for value in environment {
+        run.arg(format!("--setenv={value}"));
+    }
+    run.arg("--").arg(profile.get("entry")?).args(command);
+    Ok(run.status()?.code().unwrap_or(1))
+}
+
 pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
     if !geteuid().is_root() {
         return Err("the reload helper runs only through its installed system service".into());
@@ -1411,8 +1490,10 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         .open(runtime.join("reload.lock"))?;
     lock.try_lock()?;
     let pinned_path = fs::canonicalize(runtime.join("profile-root"))?;
-    let running = Profile::load(&pinned_path)?;
-    profile.check_running_identity(&running)?;
+    // Apply the same pinned host-identity check used by entry. A host account
+    // whose numeric IDs changed must restart rather than switching a lifetime
+    // that was created with the previous credentials.
+    let running = profile.running_profile(instance)?;
     for profile in [&running, profile] {
         profile
             .values
@@ -1487,29 +1568,6 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
     Ok(0)
 }
 
-// Connecting from this separate owner-UID process ensures that SO_PEERCRED at
-// the host Nix daemon identifies the real owner, rather than a shifted guest
-// UID. The two directions close independently so protocol EOF is preserved.
-pub fn nix_proxy(socket: &str, target: &str) -> Result<i32> {
-    let listener = UnixListener::bind(socket)?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    for connection in listener.incoming() {
-        let mut incoming = connection?;
-        let mut outgoing = UnixStream::connect(target)?;
-        let mut input = incoming.try_clone()?;
-        let mut output = outgoing.try_clone()?;
-        thread::spawn(move || {
-            let first = thread::spawn(move || {
-                let _ = std::io::copy(&mut input, &mut outgoing);
-                let _ = outgoing.shutdown(std::net::Shutdown::Write);
-            });
-            let _ = std::io::copy(&mut output, &mut incoming);
-            let _ = incoming.shutdown(std::net::Shutdown::Write);
-            let _ = first.join();
-        });
-    }
-    Err(error("Nix proxy listener closed").into())
-}
 #[cfg(test)]
 mod tests {
     use super::{owner_id_mappings, uid_range_at};

@@ -67,19 +67,23 @@ rustPlatform.buildRustPackage {
       installShellCompletion --fish --name $name.fish $name.fish
     done
     install -Dm644 LICENSE "$out/share/licenses/nook/LICENSE"
-    wrapProgram "$out/bin/nk" --prefix PATH : ${
-      lib.makeBinPath [
-        systemd
-        coreutils
-        util-linux
-        iproute2
-        passt
-        xdg-dbus-proxy
-        bubblewrap
-        bindfs
-        nix
-      ]
+    runtimePath=${
+      lib.escapeShellArg (
+        lib.makeBinPath [
+          systemd
+          coreutils
+          util-linux
+          iproute2
+          passt
+          xdg-dbus-proxy
+          bubblewrap
+          bindfs
+          nix
+        ]
+      )
     }
+    wrapProgram "$out/bin/nk" --prefix PATH : "$runtimePath"
+    wrapProgram "$out/bin/nook-root" --prefix PATH : "$runtimePath"
   '';
   meta = {
     description = "NixOS sandboxes managed by systemd, with the nk launcher";

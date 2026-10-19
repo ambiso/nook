@@ -95,10 +95,3 @@ _clap_dynamic_completer_{name}
     add_profile(directory, "dota-ai", state)
     for shell in ["bash", "zsh", "fish"]:
         assert "dota-ai" in candidates(shell, ["nk", "launch", "d"])
-
-    # Completion input must never divert a pkexec invocation into another mode.
-    result = subprocess.run([str(package / "bin/nk"), "list"],
-                            env=dict(env, COMPLETE="fish", PKEXEC_UID="1234"),
-                            capture_output=True, text=True, timeout=15)
-    assert result.returncode != 0
-    assert "polkit execution is restricted" in result.stderr

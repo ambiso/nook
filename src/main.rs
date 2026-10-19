@@ -1,20 +1,21 @@
 #![forbid(unsafe_code)]
 
 mod completion;
-mod config;
 mod portal;
-mod storage;
-mod supervise;
+mod proxy;
 mod tui;
 
 use clap::{Args, Parser, Subcommand};
-use config::{Profile, Result, catalog, valid_instance};
+use nook::{
+    config::{self, Profile, Result, catalog, valid_instance},
+    storage,
+};
 use std::{
     collections::BTreeSet,
     env, fs,
     io::{self, IsTerminal, Read, Write},
     os::unix::fs::PermissionsExt,
-    path::{Component, Path, PathBuf},
+    path::PathBuf,
     process::{Command, ExitStatus},
 };
 
@@ -26,28 +27,14 @@ struct Cli {
     profiles: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Action>,
-    // Only installed system services invoke these entry points. The supervisor
-    // independently checks root credentials and immutable profile provenance.
-    #[arg(long, hide = true, num_args = 2, value_names = ["PROFILE", "INSTANCE"])]
-    serve: Option<Vec<String>>,
     #[arg(long, hide = true, num_args = 2, value_names = ["SOCKET", "TARGET"])]
     nix_proxy: Option<Vec<String>>,
-    #[arg(long, hide = true, num_args = 2, value_names = ["PROFILE", "INSTANCE"])]
-    enter: Option<Vec<String>>,
-    #[arg(long, hide = true, num_args = 2, value_names = ["PROFILE", "INSTANCE"])]
-    reload: Option<Vec<String>>,
     #[arg(long, hide = true)]
     portal_bridge: Option<String>,
     #[arg(long, hide = true)]
     appearance_bridge: Option<String>,
     #[arg(long, hide = true)]
     document_mountpoint: bool,
-    #[arg(long, hide = true, value_parser = parse_entry_environment)]
-    entry_environment: Vec<String>,
-    #[arg(long, hide = true, value_parser = parse_entry_directory)]
-    entry_directory: Option<PathBuf>,
-    #[arg(last = true, hide = true)]
-    enter_command: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -227,15 +214,6 @@ fn parse_name(value: &str) -> std::result::Result<String, String> {
     }
 }
 
-fn parse_entry_directory(value: &str) -> std::result::Result<PathBuf, String> {
-    let path = PathBuf::from(value);
-    if path.is_absolute() && !path.components().any(|part| part == Component::ParentDir) {
-        Ok(path)
-    } else {
-        Err("entry directory must be absolute and contain no parent traversal".into())
-    }
-}
-
 fn allowed_entry_environment(key: &str) -> bool {
     [
         "TERM",
@@ -264,17 +242,6 @@ fn allowed_entry_environment(key: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
         })
-}
-
-fn parse_entry_environment(value: &str) -> std::result::Result<String, String> {
-    if value
-        .split_once('=')
-        .is_some_and(|(key, _)| allowed_entry_environment(key))
-    {
-        Ok(value.to_owned())
-    } else {
-        Err("only terminal, locale, desktop and input-method variables may be forwarded".into())
-    }
 }
 
 fn find_profile<'a>(profiles: &'a [Profile], name: &str) -> Result<&'a Profile> {
@@ -361,6 +328,20 @@ enum EntryPoint {
     Gui,
 }
 
+fn privileged_helper() -> Result<PathBuf> {
+    let current = env::current_exe()?;
+    let name = current.file_name().and_then(|name| name.to_str());
+    let binary = if name == Some(".nk-wrapped") {
+        ".nook-root-wrapped"
+    } else {
+        "nook-root"
+    };
+    Ok(current
+        .parent()
+        .ok_or("nk executable has no parent directory")?
+        .join(binary))
+}
+
 fn launch(
     profile: &Profile,
     instance: &str,
@@ -393,12 +374,12 @@ fn launch(
     }
     arguments.extend_from_slice(command);
     // systemd's machine bus transport needs host privileges to enter the
-    // machine namespaces. Polkit authorizes this fixed helper; the helper
-    // validates the installed profile and always enters as its owner.
+    // machine namespaces. Polkit authorizes the separate, narrow privileged
+    // helper, which validates the installed profile and enters as its owner.
     let mut enter = Command::new("/run/wrappers/bin/pkexec");
     enter
-        .arg(env::current_exe()?)
-        .arg("--enter")
+        .arg(privileged_helper()?)
+        .arg("enter")
         .arg(&profile.dir)
         .arg(instance);
     if !gui {
@@ -419,73 +400,6 @@ fn launch(
     }
     enter.arg("--").args(arguments);
     Ok(enter.status()?.code().unwrap_or(1))
-}
-
-fn enter_instance(
-    profile: &Profile,
-    instance: &str,
-    command: &[String],
-    environment: &[String],
-    directory: Option<&Path>,
-) -> Result<i32> {
-    if !nix::unistd::geteuid().is_root() {
-        return Err("entry helper requires polkit authorization".into());
-    }
-    let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
-    if caller != profile.host_uid()? {
-        return Err("caller does not own this sandbox profile".into());
-    }
-    let registered = PathBuf::from(format!(
-        "/etc/sandbox/profiles/{}/{}",
-        profile.owner_key()?,
-        profile.get("name")?
-    ));
-    let declared = fs::canonicalize(registered)?;
-    if !declared.starts_with("/nix/store") || declared != fs::canonicalize(&profile.dir)? {
-        return Err("entry helper accepts only profiles installed by the host module".into());
-    }
-    // Authorization uses today's installed profile. Entry must use the guest's
-    // pinned generation, which can intentionally outlive a host rebuild.
-    let running = profile.running_profile(instance)?;
-    let profile = &running;
-    let home = Path::new(profile.get("home")?);
-    let directory = directory.unwrap_or(home);
-    if !directory.starts_with(home) {
-        return Err("entry directory must be within the selected sandbox's home".into());
-    }
-    let default_shell = [profile.get("shell")?.to_owned()];
-    let command = if command.is_empty() {
-        &default_shell
-    } else {
-        command
-    };
-    let machine = format!(
-        "{}@{}",
-        profile.get("username")?,
-        profile.machine(instance)?
-    );
-    let mut run = Command::new("systemd-run");
-    run.args([
-        "--user",
-        "--machine",
-        &machine,
-        "--quiet",
-        "--wait",
-        "--collect",
-        "--service-type=exec",
-        "--expand-environment=no",
-    ]);
-    run.arg(if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        "--pty"
-    } else {
-        "--pipe"
-    });
-    run.arg("--working-directory").arg(directory);
-    for value in environment {
-        run.arg(format!("--setenv={value}"));
-    }
-    run.arg("--").arg(profile.get("entry")?).args(command);
-    Ok(run.status()?.code().unwrap_or(1))
 }
 
 #[derive(Clone)]
@@ -588,39 +502,10 @@ fn stop_all(profiles: &[Profile], profile: Option<&str>) -> Result<i32> {
 }
 
 fn run() -> Result<i32> {
-    // pkexec authorization must never enable completion handling in the root helper.
-    if env::var_os("PKEXEC_UID").is_none() {
-        completion::complete();
-    }
+    completion::complete();
     let cli = Cli::parse();
-    if let Some(arguments) = cli.enter {
-        return enter_instance(
-            &Profile::load(&PathBuf::from(&arguments[0]))?,
-            &arguments[1],
-            &cli.enter_command,
-            &cli.entry_environment,
-            cli.entry_directory.as_deref(),
-        );
-    }
-    if let Some(arguments) = cli.reload {
-        return supervise::reload(
-            &Profile::load(&PathBuf::from(&arguments[0]))?,
-            &arguments[1],
-        );
-    }
-    // Authorization to join is never authorization to run a root supervisor,
-    // proxy, or another CLI command with caller-controlled configuration.
-    if env::var_os("PKEXEC_UID").is_some() {
-        return Err("polkit execution is restricted to the validated entry helper".into());
-    }
-    if let Some(arguments) = cli.serve {
-        return supervise::serve(
-            &Profile::load(&PathBuf::from(&arguments[0]))?,
-            &arguments[1],
-        );
-    }
     if let Some(arguments) = cli.nix_proxy {
-        return supervise::nix_proxy(&arguments[0], &arguments[1]);
+        return proxy::nix_proxy(&arguments[0], &arguments[1]);
     }
     if let Some(address) = cli.portal_bridge {
         return portal::bridge(&address, false);
@@ -730,39 +615,6 @@ mod tests {
         }
         for removed in ["join", "j"] {
             assert!(Cli::try_parse_from(["nk", removed, "dev"]).is_err());
-        }
-    }
-
-    #[test]
-    fn entry_environment_is_only_guest_ui_data() {
-        for allowed in [
-            "TERM_PROGRAM=terminal",
-            "LC_TIME=ja_JP.UTF-8",
-            "LANG=C.UTF-8",
-        ] {
-            assert!(parse_entry_environment(allowed).is_ok());
-        }
-        for rejected in [
-            "HOME=/",
-            "LD_PRELOAD=/tmp/library.so",
-            "DISPLAY=:77",
-            "DBUS_SESSION_BUS_ADDRESS=host",
-            "LC_=x",
-        ] {
-            assert!(parse_entry_environment(rejected).is_err());
-        }
-    }
-
-    #[test]
-    fn entry_directory_is_an_absolute_path_without_parent_traversal() {
-        for directory in ["/home/test", "/home/test/Projects/project's %h"] {
-            assert_eq!(
-                parse_entry_directory(directory).unwrap(),
-                Path::new(directory)
-            );
-        }
-        for directory in ["Projects", "/home/test/../other", ""] {
-            assert!(parse_entry_directory(directory).is_err());
         }
     }
 
