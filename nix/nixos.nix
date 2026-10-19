@@ -22,6 +22,7 @@ let
       }) user.programs.nook.sandboxes
     ) users
   );
+  xdg-dbus-proxy = import ./xdg-dbus-proxy.nix { inherit pkgs; };
   unitName = p: "sandbox-${p.owner}-${p.name}@";
 
 in
@@ -52,7 +53,7 @@ in
               pkgs.util-linux
               pkgs.iproute2
               pkgs.passt
-              pkgs.xdg-dbus-proxy
+              xdg-dbus-proxy
               pkgs.bubblewrap
               pkgs.bindfs
               pkgs.nix

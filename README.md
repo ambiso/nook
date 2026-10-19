@@ -357,8 +357,8 @@ activation, even with `nix = false`. `podman = true` enables rootless Podman ins
 the instance.
 
 Networking uses a separate namespace and pasta. Guest loopback is independent
-of host loopback. Pasta can publish guest listeners on available host ports;
-use `networkArgs` to change that behavior or `network = false` to disable
+of host loopback, and automatic port forwarding is disabled in both directions.
+Use `networkArgs` to publish explicit ports or `network = false` to disable
 network access. See [architecture and configuration](docs/architecture.md) for
 the D-Bus policies, storage model, permissions, and troubleshooting commands.
 
@@ -366,8 +366,16 @@ the D-Bus policies, storage model, permissions, and troubleshooting commands.
 
 You are responsible for the code you run and the access you give it. Shared
 mounts, devices, the host Nix daemon, and desktop services expose parts of the
-host to sandboxed programs. Review the configuration before using it for
-untrusted code, and keep backups of data you care about.
+host to sandboxed programs. Direct Wayland access includes all globals exposed
+by the compositor, potentially including clipboard, screen-capture and desktop
+control protocols. Direct audio sockets rely on the host PipeWire/PulseAudio
+policy. Configuration and environment values are stored in the world-readable
+Nix store and must not contain secrets.
+
+Instances share the host kernel, and Nook does not currently install CPU,
+memory, I/O or process ceilings for them. Treat hostile workloads as capable of
+kernel attack and host resource exhaustion. Review the configuration before
+using it for untrusted code, and keep backups of data you care about.
 
 Nook is experimental. I provide no guarantee of security, isolation, correctness,
 or protection against data loss. Use it at your own risk; the license's warranty

@@ -1,4 +1,5 @@
 {
+  pkgs,
   rustPlatform,
   makeWrapper,
   installShellFiles,
@@ -8,7 +9,6 @@
   util-linux,
   iproute2,
   passt,
-  xdg-dbus-proxy,
   dbus,
   pkg-config,
   cargo-deny,
@@ -20,6 +20,9 @@
   zsh,
   python3,
 }:
+let
+  xdg-dbus-proxy = import ./nix/xdg-dbus-proxy.nix { inherit pkgs; };
+in
 rustPlatform.buildRustPackage {
   pname = "nook";
   version = "0.1.0";

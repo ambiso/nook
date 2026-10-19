@@ -369,14 +369,19 @@ let
             "--no-map-gw"
             "--dns-forward"
             "169.254.1.1"
-            # Pasta otherwise mirrors host listeners onto guest loopback,
-            # reserving their ports inside this independent network namespace.
+            # Disable both automatic directions. A guest listener must not
+            # become a host listener unless the profile requests that mapping,
+            # and host listeners must not reserve guest loopback ports.
+            "--tcp-ports"
+            "none"
+            "--udp-ports"
+            "none"
             "--tcp-ns"
             "none"
             "--udp-ns"
             "none"
           ];
-          description = "Arguments for pasta. Host-listener mirroring is disabled by default so the guest can bind ports independently.";
+          description = "Arguments for pasta. Automatic host/guest port forwarding is disabled by default; add explicit mappings when needed.";
         };
         dnsSearch = lib.mkOption {
           type = types.listOf types.str;
@@ -421,6 +426,7 @@ let
         environment = lib.mkOption {
           type = types.attrsOf types.str;
           default = { };
+          description = "Environment variables embedded in the world-readable Nix store profile. Do not put secrets here.";
         };
         hostSessionBus = lib.mkOption {
           type = types.bool;

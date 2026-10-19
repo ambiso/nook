@@ -319,6 +319,20 @@ try:
     machine.succeed(
         "curl --fail --max-time 5 http://127.0.0.1:18761 | grep 'host loopback works'"
     )
+    # The other pasta forwarding direction is disabled too: a listener opened
+    # by an untrusted guest process must not silently become a host listener.
+    inside(
+        "systemd-run --user --unit=sandbox-network-listener "
+        "python3 -m http.server 18762 --bind 0.0.0.0"
+    )
+    inside(
+        "python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", 18762), timeout=2).close()'"
+    )
+    # Pasta discovers listeners periodically. Give the insecure automatic
+    # publication behavior enough time to appear before checking the host.
+    machine.succeed("sleep 2")
+    machine.fail("curl --fail --max-time 2 http://127.0.0.1:18762")
+    inside("systemctl --user stop sandbox-network-listener.service")
     inside(
         f'result=$(timeout 30 nix build --option substitute false --no-link --print-out-paths --file {NIX_BUILD_CHECK}); grep daemon-proxy-works "$result"'
     )

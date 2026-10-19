@@ -302,6 +302,23 @@ fn print_command_output(output: &std::process::Output, action: &str) -> Result<(
     }
     Err(message.into())
 }
+
+fn clear_completed_reload_failure(runtime: &Path, pinned: &Path) -> Result<()> {
+    let marker = runtime.join("reload-failed");
+    match fs::read(&marker) {
+        Ok(target) if target == pinned.as_os_str().as_encoded_bytes() => {
+            fs::remove_file(marker)?;
+            Ok(())
+        }
+        Ok(_) => Err(
+            "a different generation failed to reload; stop and restart the instance before entering"
+                .into(),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn user_command(profile: &Profile, exe: &str) -> Result<Command> {
     let mut c = Command::new("setpriv");
     c.args([
@@ -1535,11 +1552,10 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         );
     }
     if pinned_path == canonical {
-        match fs::remove_file(runtime.join("reload-failed")) {
-            Ok(()) => (),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error.into()),
-        }
+        // A crash after repinning but before removing the marker is safe to
+        // finish. A marker naming another generation represents a partial
+        // switch that this profile cannot repair and must remain fail-closed.
+        clear_completed_reload_failure(&runtime, &canonical)?;
         return Ok(0);
     }
     let machine = profile.machine(instance)?;
@@ -1616,7 +1632,24 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{owner_id_mappings, uid_range_at};
+    use super::{clear_completed_reload_failure, owner_id_mappings, uid_range_at};
+    use std::{fs, path::Path};
+
+    #[test]
+    fn only_the_completed_reload_generation_can_clear_its_failure_marker() {
+        let runtime = tempfile::tempdir().unwrap();
+        let pinned = Path::new("/nix/store/pinned-profile");
+        let marker = runtime.path().join("reload-failed");
+
+        clear_completed_reload_failure(runtime.path(), pinned).unwrap();
+        fs::write(&marker, pinned.as_os_str().as_encoded_bytes()).unwrap();
+        clear_completed_reload_failure(runtime.path(), pinned).unwrap();
+        assert!(!marker.exists());
+
+        fs::write(&marker, b"/nix/store/partially-applied-profile").unwrap();
+        assert!(clear_completed_reload_failure(runtime.path(), pinned).is_err());
+        assert!(marker.exists());
+    }
 
     #[test]
     fn nested_mountpoint_creation_cannot_follow_symlinks() {

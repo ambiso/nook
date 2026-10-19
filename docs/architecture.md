@@ -114,6 +114,14 @@ root maps to a high host UID, never host root. Native systemd managers own syste
 and user services inside the guest. Rootless Podman uses subordinate UIDs/GIDs
 and native mapping helpers within this private namespace.
 
+Instances share the host kernel. Nspawn supplies namespace, capability and
+system-call isolation, but Nook does not turn it into a virtual-machine security
+boundary. To support nested application sandboxes, Nook also replaces nspawn's
+locked procfs view with a procfs mounted inside the guest namespaces. Nook sets no per-instance
+CPU, memory, I/O or process ceilings, so a hostile workload can exhaust host
+resources. Apply host systemd limits when those properties are part of the threat
+model.
+
 The Nix store is shared read-only. Mutable homes, build output, caches, and
 rootless Podman storage are separate. `bindMounts` adds deliberate exceptions:
 
@@ -146,17 +154,23 @@ sockets are excluded. `startX = true` starts a private
 applications needing X11; guest `:0` refers to that server. Separate network
 namespaces also keep host abstract X11 sockets out of reach.
 
-The direct Wayland connection includes ordinary clipboard protocols. A GUI
-application in a sandbox can therefore replace the host clipboard and may read
-clipboard data when the compositor grants it selection access. The read-only
-socket bind does not restrict messages sent over the socket. Do not treat the
-host clipboard as a secret boundary while a GUI-capable sandbox is running;
-strong clipboard isolation requires compositor policy or a Wayland protocol
-proxy that filters clipboard globals.
+The direct Wayland connection exposes every global that the host compositor
+offers to that connection. This includes ordinary clipboard protocols: a GUI
+application in a sandbox can replace the host clipboard and may read clipboard
+data when the compositor grants it selection access. On compositors that expose
+unrestricted screencopy, output-management, virtual-input or desktop-shell
+extensions, the corresponding capture or control operations are available too.
+The read-only socket bind does not restrict messages sent over the socket. Do
+not treat the host display or clipboard as a secret boundary while a GUI-capable
+sandbox is running; strong isolation requires compositor policy or a Wayland
+protocol proxy that filters globals.
 
 Start GUI-capable instances from a Wayland session. An instance first started
 without a Wayland socket must be stopped and started from that session to gain
 one. GPU and audio access default to enabled and can be disabled per profile.
+Audio forwards the host PipeWire and PulseAudio sockets directly; the host media
+session's policy determines whether that permits microphone capture or other
+graph access. GPU forwarding exposes the host kernel driver to sandbox clients.
 
 A `guiEntryPoint` exports a host desktop launcher and its icons. `desktopFile`
 selects an upstream desktop ID when it differs from the executable's name;
@@ -212,12 +226,11 @@ programs.nook.sandboxes.dev.nixosModules = [ {
 } ];
 ```
 
-Pasta provides networking in a separate namespace. Host-listener mirroring onto
-guest loopback is disabled, so guest applications can bind ports already used
-on the host. Pasta can still publish guest listeners on available host ports.
-Use `networkArgs` to configure mappings or `network = false` for an offline
-instance. Even offline instances retain a separate namespace for abstract-socket
-isolation.
+Pasta provides networking in a separate namespace. Automatic forwarding is
+disabled in both directions, so host listeners do not reserve guest loopback
+ports and guest listeners are not published on the host. Use `networkArgs` to
+configure explicit mappings or `network = false` for an offline instance. Even
+offline instances retain a separate namespace for abstract-socket isolation.
 
 `dnsSearch` configures client-side search domains. Forwarding a DNS zone on the
 host does not add a guest search domain. Guest-only hostname overrides use normal
