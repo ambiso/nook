@@ -34,6 +34,8 @@ struct Cli {
     nix_proxy: Option<Vec<String>>,
     #[arg(long, hide = true, num_args = 2, value_names = ["PROFILE", "INSTANCE"])]
     enter: Option<Vec<String>>,
+    #[arg(long, hide = true, num_args = 2, value_names = ["PROFILE", "INSTANCE"])]
+    reload: Option<Vec<String>>,
     #[arg(long, hide = true)]
     portal_bridge: Option<String>,
     #[arg(long, hide = true)]
@@ -598,6 +600,12 @@ fn run() -> Result<i32> {
             &cli.enter_command,
             &cli.entry_environment,
             cli.entry_directory.as_deref(),
+        );
+    }
+    if let Some(arguments) = cli.reload {
+        return supervise::reload(
+            &Profile::load(&PathBuf::from(&arguments[0]))?,
+            &arguments[1],
         );
     }
     // Authorization to join is never authorization to run a root supervisor,
