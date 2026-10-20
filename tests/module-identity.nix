@@ -39,6 +39,7 @@ let
     home-manager.users.alice.programs.nook.sandboxes.dev.nixosModules = [
       { networking.hostName = "workstation"; }
     ];
+    home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment = [ "CUSTOM_HINT" ];
   };
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
@@ -131,6 +132,9 @@ assert lib.any (
 assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
+assert lib.elem "XDG_CURRENT_DESKTOP" guest.sandboxes.dev.hostEnvironment;
+assert lib.elem "CUSTOM_HINT"
+  explicit.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
 assert stalePackageDefault.outPath != staleNook.outPath;
 assert themeReachesApplications portalTheme "xdgdesktopportal";
 assert themeReachesApplications qtTheme "qt5ct";

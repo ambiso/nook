@@ -71,6 +71,7 @@ def main():
                 "pasta",
             ]:
                 (profile / name).write_text("")
+            (profile / "host-environment").write_text("XDG_CURRENT_DESKTOP\n")
             profiles.append(profile)
         mock = root / "run/current-system/sw/bin"
         mock.mkdir(parents=True)
@@ -114,6 +115,8 @@ def main():
             "enter",
             "check",
             "main",
+            "--host-environment",
+            "XDG_CURRENT_DESKTOP=GNOME:GNOME",
         ]
         environment = os.environ | {
             "PKEXEC_UID": str(owner.pw_uid),
@@ -132,6 +135,7 @@ def main():
         assert result.returncode == 0, result.stderr
         arguments = json.loads(log.read_text())
         assert f"{owner.pw_name}@sbx-{owner.pw_uid}-check-main" in arguments
+        assert "--setenv=XDG_CURRENT_DESKTOP=GNOME:GNOME" in arguments
         assert arguments[-2:] == ["/running-entry", "/running-shell"], arguments
         log.unlink()
         failed = runtime / "reload-failed"
@@ -147,8 +151,19 @@ def main():
         result = invoke(PKEXEC_UID=str(owner.pw_uid + 1))
         assert result.returncode == 1, result.stderr
         assert not log.exists()
+        unsafe_environment = command.copy()
+        unsafe_environment[-1] = "PATH=/host/bin"
+        result = subprocess.run(
+            unsafe_environment,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 1 and "not allowed" in result.stderr, result.stderr
+        assert not log.exists()
         untrusted_path = command.copy()
-        untrusted_path[-2] = "/etc"
+        untrusted_path[untrusted_path.index("enter") + 1] = "/etc"
         result = subprocess.run(
             untrusted_path,
             env=environment,
@@ -160,7 +175,11 @@ def main():
         assert not log.exists()
         # Entry authorization must never reach either system-service mode.
         for mode in ["serve", "reload"]:
-            privileged = command[:-3] + [mode, str(installed), "main"]
+            privileged = command[:command.index("enter")] + [
+                mode,
+                str(installed),
+                "main",
+            ]
             result = subprocess.run(
                 privileged,
                 env=environment,

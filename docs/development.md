@@ -105,13 +105,16 @@ TMPDIR=/tmp MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-env-forward=TMPDIR" rustu
   --skip storage::tests::symlink_instance_roots_are_refused \
   --skip storage::tests::mounts_are_rejected_before_any_removal \
   --skip storage::tests::lifecycle_lock_excludes_startup_and_deletion \
-  --skip storage::tests::replacing_a_confirmed_directory_is_refused
+  --skip storage::tests::replacing_a_confirmed_directory_is_refused \
+  --skip completion::tests::custom_catalog_and_selected_profile_control_instance_candidates
 ```
 
 Filesystem access is needed for the temporary-directory tests. The skipped
 tests use Linux `openat`, `openat2`, directory iteration, or file locks that Miri
 does not implement; they run in the native test suite instead. NSS lookup and
-reservation migration also have Miri-specific ignores and run natively.
+reservation migration also have Miri-specific ignores and run natively. The
+completion test above invokes `systemctl`, whose process-spawning API is not
+implemented by Miri, and also runs natively.
 Use a stable `TMPDIR` when building Miri artifacts. If cached
 artifacts retain a deleted directory from an earlier Nix shell, rerun with a
 fresh `CARGO_TARGET_DIR`.

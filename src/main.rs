@@ -6,7 +6,9 @@ mod tui;
 
 use clap::{Args, Parser, Subcommand};
 use nook::{
-    config::{self, Profile, Result, catalog, valid_instance},
+    config::{
+        self, Profile, Result, catalog, valid_forwarded_environment_assignment, valid_instance,
+    },
     storage,
 };
 use std::{
@@ -318,6 +320,17 @@ fn privileged_helper(profile: &Profile) -> Result<PathBuf> {
     Ok(PathBuf::from("/etc/sandbox/helpers").join(profile.owner_key()?))
 }
 
+fn forwarded_environment(profile: &Profile) -> Vec<String> {
+    profile
+        .host_environment
+        .iter()
+        .filter_map(|name| env::var(name).ok().map(|value| format!("{name}={value}")))
+        .filter(|assignment| {
+            valid_forwarded_environment_assignment(assignment, &profile.host_environment)
+        })
+        .collect()
+}
+
 fn launch(
     profile: &Profile,
     instance: &str,
@@ -366,6 +379,12 @@ fn launch(
                 .arg("--entry-directory")
                 .arg(running.guest_working_directory(instance, &directory)?);
         }
+    }
+    // pkexec deliberately sanitizes its environment. Carry only variables
+    // selected by the root-installed profile; the privileged helper validates
+    // the same allow-list against the pinned running generation.
+    for assignment in forwarded_environment(&running) {
+        enter.arg("--host-environment").arg(assignment);
     }
     enter.arg("--").args(arguments);
     Ok(enter.status()?.code().unwrap_or(1))

@@ -47,6 +47,7 @@ let
     XDG_DATA_DIRS = lib.concatStringsSep ":" [
       "${appPackage}/share"
       "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}"
+      "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}"
       "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}"
       "/run/current-system/sw/share"
     ];

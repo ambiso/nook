@@ -5,12 +5,32 @@ use std::{
 };
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+pub fn valid_environment_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+pub fn valid_forwarded_environment_assignment(assignment: &str, allowed_names: &[String]) -> bool {
+    assignment.split_once('=').is_some_and(|(name, value)| {
+        valid_environment_name(name)
+            && allowed_names.iter().any(|allowed| allowed == name)
+            && !value.is_empty()
+            && value.len() <= 1024
+            && !value.chars().any(char::is_control)
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct Profile {
     pub dir: PathBuf,
     pub values: BTreeMap<String, String>,
     pub mounts: Vec<Mount>,
     pub environment: BTreeMap<String, String>,
+    pub host_environment: Vec<String>,
     pub session_rules: Vec<String>,
     pub system_rules: Vec<String>,
     pub pasta: Vec<String>,
@@ -65,6 +85,21 @@ fn lines(path: &Path) -> Result<Vec<String>> {
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect())
+}
+fn optional_lines(path: &Path) -> Result<Vec<String>> {
+    // Profiles pinned before hostEnvironment was introduced must remain
+    // enterable until their instance is restarted on a newer generation.
+    match lines(path) {
+        Ok(lines) => Ok(lines),
+        Err(error)
+            if error
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+        {
+            Ok(Vec::new())
+        }
+        Err(error) => Err(error),
+    }
 }
 fn pairs(path: &Path) -> Result<BTreeMap<String, String>> {
     let contents = fs::read_to_string(path)?;
@@ -335,6 +370,7 @@ impl Profile {
             values,
             mounts,
             environment: pairs(&dir.join("environment"))?,
+            host_environment: optional_lines(&dir.join("host-environment"))?,
             session_rules: lines(&dir.join("session-rules"))?,
             system_rules: lines(&dir.join("system-rules"))?,
             pasta: lines(&dir.join("pasta"))?,
@@ -373,6 +409,12 @@ impl Profile {
             {
                 return Err(format!("reserved or invalid environment variable {key}").into());
             }
+        }
+        if p.host_environment
+            .iter()
+            .any(|name| !valid_environment_name(name))
+        {
+            return Err("invalid host environment variable name".into());
         }
         Ok(p)
     }
@@ -534,6 +576,7 @@ mod tests {
             ]),
             mounts: Vec::new(),
             environment: BTreeMap::new(),
+            host_environment: Vec::new(),
             session_rules: Vec::new(),
             system_rules: Vec::new(),
             pasta: Vec::new(),
@@ -743,6 +786,35 @@ mod tests {
         fs::create_dir_all(directory.path().join("instances/n-no-home")).unwrap();
         fs::write(directory.path().join("instances/n-file"), "not an instance").unwrap();
         assert_eq!(profile.saved_instances().unwrap(), ["n-alpha", "n-zeta"]);
+    }
+
+    #[test]
+    fn forwarded_environment_requires_a_profile_allow_list() {
+        let allowed = vec!["XDG_CURRENT_DESKTOP".to_owned(), "CUSTOM_HINT".to_owned()];
+        for assignment in ["XDG_CURRENT_DESKTOP=GNOME:GNOME", "CUSTOM_HINT=enabled"] {
+            assert!(valid_forwarded_environment_assignment(assignment, &allowed));
+        }
+        for assignment in [
+            "PATH=/host/bin",
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+            "DISPLAY=:0",
+            "XDG_CURRENT_DESKTOP=",
+            "XDG_CURRENT_DESKTOP=GNOME\nPATH=/host/bin",
+        ] {
+            assert!(!valid_forwarded_environment_assignment(
+                assignment, &allowed
+            ));
+        }
+    }
+
+    #[test]
+    fn old_profiles_without_a_host_environment_file_remain_readable() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            optional_lines(&directory.path().join("host-environment"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

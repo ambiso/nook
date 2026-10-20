@@ -18,8 +18,8 @@ def as_owner(command):
 def launcher(args):
     # Deliberately supply host X11 variables; only Wayland should be forwarded.
     return as_owner(
-        "WAYLAND_DISPLAY=wayland-test DISPLAY=:77 "
-        "XAUTHORITY=/home/alice/host.xauth nk " + args
+        "WAYLAND_DISPLAY=wayland-test DISPLAY=:77 XDG_CURRENT_DESKTOP=GNOME "
+        "NOOK_TEST_HOST_ENV=forwarded XAUTHORITY=/home/alice/host.xauth nk " + args
     )
 
 
@@ -465,6 +465,8 @@ try:
         test "$NIXOS_OZONE_WL" = 1
         test "$QT_QPA_PLATFORM" = wayland
         test "$XDG_SESSION_TYPE" = wayland
+        test "$XDG_CURRENT_DESKTOP" = GNOME
+        test "$NOOK_TEST_HOST_ENV" = forwarded
         test -x "$SSH_ASKPASS"
         test "$MOZ_ENABLE_WAYLAND" = 1
         test "$SANDBOX_SHARED_MODULE" = applied

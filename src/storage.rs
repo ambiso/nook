@@ -159,6 +159,7 @@ mod tests {
             ]),
             mounts: vec![],
             environment: BTreeMap::new(),
+            host_environment: vec![],
             session_rules: vec![],
             system_rules: vec![],
             pasta: vec![],

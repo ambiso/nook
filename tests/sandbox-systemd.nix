@@ -322,6 +322,7 @@ pkgs.testers.runNixOSTest {
       };
       programs.nook.sandboxes.check = {
         stateDirectory = ".sandbox/check";
+        hostEnvironment = [ "NOOK_TEST_HOST_ENV" ];
         environment.NOOK_TEST_REVISION = "original";
         imports = [
           { environment.SANDBOX_PROFILE_IMPORT = "applied"; }

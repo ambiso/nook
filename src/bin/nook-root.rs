@@ -2,7 +2,7 @@
 
 use clap::{Args, Parser, Subcommand};
 use nook::{
-    config::{Profile, Result, owner_key, valid_name},
+    config::{Profile, Result, owner_key, valid_environment_name, valid_name},
     supervise,
 };
 use std::{
@@ -40,6 +40,8 @@ struct Enter {
     instance: String,
     #[arg(long, value_parser = parse_entry_directory)]
     entry_directory: Option<PathBuf>,
+    #[arg(long, value_parser = parse_host_environment)]
+    host_environment: Vec<String>,
     #[arg(last = true)]
     command: Vec<String>,
 }
@@ -58,6 +60,19 @@ fn parse_entry_directory(value: &str) -> std::result::Result<PathBuf, String> {
         Ok(path)
     } else {
         Err("entry directory must be absolute and contain no parent traversal".into())
+    }
+}
+
+fn parse_host_environment(value: &str) -> std::result::Result<String, String> {
+    if value.split_once('=').is_some_and(|(name, value)| {
+        valid_environment_name(name)
+            && !value.is_empty()
+            && value.len() <= 1024
+            && !value.chars().any(char::is_control)
+    }) {
+        Ok(value.to_owned())
+    } else {
+        Err("host environment must have a valid name and a short, printable value".into())
     }
 }
 
@@ -112,6 +127,7 @@ fn run() -> Result<i32> {
                 &request.instance,
                 &request.command,
                 request.entry_directory.as_deref(),
+                &request.host_environment,
             )
         }
         Action::Serve(target) => {

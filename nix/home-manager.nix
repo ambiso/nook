@@ -10,6 +10,16 @@ let
   homeConfig = config;
   outer = config.programs.nook;
   launcher = outer.package;
+  desktopEnvironmentVariables = [
+    "XDG_CURRENT_DESKTOP"
+    "XDG_SESSION_DESKTOP"
+    "DESKTOP_SESSION"
+    "XDG_MENU_PREFIX"
+    "GDMSESSION"
+    "GNOME_DESKTOP_SESSION_ID"
+    "KDE_FULL_SESSION"
+    "KDE_SESSION_VERSION"
+  ];
   mountType = types.submodule {
     options = {
       source = lib.mkOption {
@@ -308,6 +318,7 @@ let
         ln -s ${manifest} "$out/profile"
         ln -s ${mountFile} "$out/mounts"
         ln -s ${pkgs.writeText "sandbox-environment" (textPairs cfg.environment)} "$out/environment"
+        ln -s ${pkgs.writeText "sandbox-host-environment" (lib.concatStringsSep "\n" (lib.unique cfg.hostEnvironment))} "$out/host-environment"
         ln -s ${pkgs.writeText "session-bus-rules" (lib.concatStringsSep "\n" (lib.unique sessionRules))} "$out/session-rules"
         ln -s ${pkgs.writeText "system-bus-rules" (lib.concatStringsSep "\n" (rules cfg.systemBusPolicies))} "$out/system-rules"
         ln -s ${pkgs.writeText "pasta-options" (lib.concatStringsSep "\n" cfg.networkArgs)} "$out/pasta"
@@ -457,6 +468,12 @@ let
           default = { };
           description = "Environment variables embedded in the world-readable Nix store profile. Do not put secrets here.";
         };
+        hostEnvironment = lib.mkOption {
+          type = types.listOf (types.strMatching "[A-Za-z_][A-Za-z0-9_]*");
+          default = [ ];
+          example = [ "MY_EDITOR_INTEGRATION" ];
+          description = "Host environment variable names whose current values may be forwarded when entering this sandbox. Values are not stored in the Nix store.";
+        };
         hostSessionBus = lib.mkOption {
           type = types.bool;
           default = true;
@@ -503,6 +520,7 @@ let
         };
       };
       config = {
+        hostEnvironment = lib.mkBefore desktopEnvironmentVariables;
         _profile = profile;
         _container = container;
         _appPackage = appPackage;

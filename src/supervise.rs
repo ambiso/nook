@@ -241,6 +241,7 @@ mod reload_tests {
             fs::write(root.join(name), "").unwrap();
         }
         fs::write(root.join("environment"), "").unwrap();
+        fs::write(root.join("host-environment"), "").unwrap();
         fs::write(
             root.join("profile"),
             concat!(
@@ -1544,6 +1545,7 @@ pub fn enter(
     instance: &str,
     command: &[String],
     directory: Option<&Path>,
+    host_environment: &[String],
 ) -> Result<i32> {
     let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
     if caller != profile.host_uid()? {
@@ -1562,6 +1564,14 @@ pub fn enter(
     // pinned generation, which can intentionally outlive a host rebuild.
     let running = profile.running_profile(instance)?;
     let profile = &running;
+    if host_environment.iter().any(|assignment| {
+        !crate::config::valid_forwarded_environment_assignment(
+            assignment,
+            &profile.host_environment,
+        )
+    }) {
+        return Err("host environment variable is not allowed by the running profile".into());
+    }
     let home = Path::new(profile.get("home")?);
     let directory = directory.unwrap_or(home);
     if !directory.starts_with(home) {
@@ -1578,9 +1588,10 @@ pub fn enter(
         profile.get("username")?,
         profile.machine(instance)?
     );
-    // The entry client controls neither executable lookup nor the environment
-    // of this root process. systemd-run sends the requested command to the
-    // already-running guest user manager, where it executes as the guest user.
+    // The entry client controls neither executable lookup nor this root
+    // process's environment. The root-installed running profile restricts the
+    // supplied assignments. systemd-run carries them to the guest command
+    // without importing any other part of the host environment.
     let mut run = Command::new("/run/current-system/sw/bin/systemd-run");
     run.env_clear();
     run.args([
@@ -1598,6 +1609,9 @@ pub fn enter(
     } else {
         "--pipe"
     });
+    for assignment in host_environment {
+        run.arg(format!("--setenv={assignment}"));
+    }
     run.arg("--working-directory").arg(directory);
     run.arg("--").arg(profile.get("entry")?).args(command);
     Ok(run
