@@ -26,7 +26,7 @@ Add Nook alongside your existing `nixpkgs` and `home-manager` flake inputs:
 
 ```nix
 inputs.nook = {
-  url = "github:ambiso/nook";
+  url = "github:ambiso/nook/stable";
   inputs.nixpkgs.follows = "nixpkgs";
   inputs.home-manager.follows = "home-manager";
 };
