@@ -419,13 +419,19 @@ try:
     )
     machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
 
-    # Host service upgrades may restart machined. Its availability orders
-    # sandbox startup, but its lifetime must not own running containers.
+    # Machined is socket-activated. Starting another sandbox after both units
+    # were stopped must activate the socket first; starting the service directly
+    # would make a later configuration switch fail to start its socket. The
+    # daemon's lifetime must not own containers that are already running.
     invocation_before_machined_restart = machine.succeed(
         "systemctl show sandbox-ualice-check@main.service -p InvocationID --value"
     ).strip()
-    machine.succeed("systemctl restart systemd-machined.service")
+    machine.succeed("systemctl stop systemd-machined.socket systemd-machined.service")
     machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
+    cli("launch fallback -- true")
+    machine.succeed("systemctl is-active --quiet systemd-machined.socket")
+    machine.succeed("systemctl is-active --quiet systemd-machined.service")
+    cli("stop fallback")
     assert (
         machine.succeed(
             "systemctl show sandbox-ualice-check@main.service -p InvocationID --value"

@@ -186,7 +186,8 @@ assert explicit.systemd.services ? ${service};
 assert !(automatic.systemd.services ? "sandbox-4242-dev@");
 assert explicit.systemd.services."sandbox-4242-dev@".restartIfChanged == false;
 assert explicit.systemd.services."sandbox-4242-dev@".requires == [ ];
-assert explicit.systemd.services."sandbox-4242-dev@".wants == [ "systemd-machined.service" ];
+assert explicit.systemd.services."sandbox-4242-dev@".wants == [ "systemd-machined.socket" ];
+assert explicit.systemd.services."sandbox-4242-dev@".after == [ "systemd-machined.socket" ];
 assert explicit.systemd.services."sandbox-4242-dev@".unitConfig.X-StopOnRemoval == false;
 pkgs.writeText "nook-module-identity" (
   builtins.toJSON {
