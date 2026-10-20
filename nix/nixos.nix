@@ -45,8 +45,14 @@ in
             # Any launch-time supervisor change is refused by nook-root reload and
             # still requires an explicit stop and launch.
             reloadIfChanged = true;
-            requires = [ "systemd-machined.service" ];
+            # Machined must be available when nspawn registers the container,
+            # but a host daemon restart must not propagate a stop into every
+            # running sandbox.
+            wants = [ "systemd-machined.service" ];
             after = [ "systemd-machined.service" ];
+            # Removing a profile publishes no future launcher, but it must not
+            # terminate an instance that the user has not explicitly stopped.
+            unitConfig.X-StopOnRemoval = false;
             path = [
               pkgs.systemd
               pkgs.coreutils

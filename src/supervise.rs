@@ -1316,15 +1316,22 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             }
             Ok(())
         })?;
-        let mut c = user_command(
-            profile,
-            frontend_executable()?
-                .to_str()
-                .ok_or("invalid executable path")?,
-        )?;
-        c.arg("--nix-proxy")
+        // Let Nix enforce the protocol boundary itself. The intermediary runs
+        // as the owner so it can use that account's host store connection, but
+        // every guest connection is explicitly untrusted even when the owner
+        // appears in the host daemon's trusted-users setting.
+        let mut c = user_command(profile, "systemd-socket-activate")?;
+        c.arg("--listen")
             .arg(&socket)
-            .arg("/nix/var/nix/daemon-socket/socket");
+            .arg("--")
+            .arg("nix")
+            .args([
+                "--extra-experimental-features",
+                "nix-command daemon-trust-override",
+                "daemon",
+                "--force-untrusted",
+            ])
+            .env("NIX_REMOTE", "daemon");
         helpers.children.push(c.spawn()?);
         let deadline = Instant::now() + Duration::from_secs(10);
         while !socket.exists() {
@@ -1333,6 +1340,10 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             }
             thread::sleep(Duration::from_millis(20));
         }
+        as_user(profile, || {
+            fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+            Ok(())
+        })?;
         mounts.push(Mount {
             mode: "rw".into(),
             source: socket.to_string_lossy().into(),

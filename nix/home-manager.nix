@@ -430,7 +430,7 @@ let
         nix = lib.mkOption {
           type = types.bool;
           default = false;
-          description = "Proxy the host Nix daemon with the owner's host credentials.";
+          description = "Broker untrusted-client access to the host Nix daemon.";
         };
         podman = lib.mkOption {
           type = types.bool;

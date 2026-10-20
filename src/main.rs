@@ -2,7 +2,6 @@
 
 mod completion;
 mod portal;
-mod proxy;
 mod tui;
 
 use clap::{Args, Parser, Subcommand};
@@ -27,8 +26,6 @@ struct Cli {
     profiles: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Action>,
-    #[arg(long, hide = true, num_args = 2, value_names = ["SOCKET", "TARGET"])]
-    nix_proxy: Option<Vec<String>>,
     #[arg(long, hide = true)]
     portal_bridge: Option<String>,
     #[arg(long, hide = true)]
@@ -482,9 +479,6 @@ fn stop_all(profiles: &[Profile], profile: Option<&str>) -> Result<i32> {
 fn run() -> Result<i32> {
     completion::complete();
     let cli = Cli::parse();
-    if let Some(arguments) = cli.nix_proxy {
-        return proxy::nix_proxy(&arguments[0], &arguments[1]);
-    }
     if let Some(address) = cli.portal_bridge {
         return portal::bridge(&address, false);
     }

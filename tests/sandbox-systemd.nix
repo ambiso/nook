@@ -132,6 +132,12 @@ pkgs.testers.runNixOSTest {
       (import ../nix/nixos.nix { inherit home-manager; })
     ];
     nixpkgs.pkgs = pkgs.lib.mkForce pkgs;
+    # The guest Nix broker must remove this authority before exposing the
+    # daemon socket, even when the sandbox owner is trusted on the host.
+    nix.settings.trusted-users = [
+      "root"
+      "alice"
+    ];
     specialisation = pkgs.lib.optionalAttrs (!benchmark && !diagnostics) {
       updated.configuration.home-manager.users.alice.programs.nook.sandboxes = {
         check = {

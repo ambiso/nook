@@ -357,10 +357,11 @@ Interactive desktop portals are **off by default**. Enabling `portals` permits
 host consent dialogs and access to selected host files through the document
 portal. Host appearance settings are inherited separately by default; disable
 `inheritAppearance` to turn off that separate connection when `portals` is also
-disabled. `nix = true` grants access to the host Nix daemon with the owner's
-permissions. Adding `homeManagerModules` also enables that connection for
-activation, even with `nix = false`. `podman = true` enables rootless Podman inside
-the instance.
+disabled. `nix = true` grants untrusted-client access to the host Nix daemon.
+The broker strips trusted-user authority even when the owner is trusted by the
+host daemon. Adding `homeManagerModules` also enables that connection for
+activation, even with `nix = false`. `podman = true` enables rootless Podman
+inside the instance.
 
 Networking uses a separate namespace and pasta. Guest loopback is independent
 of host loopback, and automatic port forwarding is disabled in both directions.

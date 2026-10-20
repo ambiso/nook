@@ -349,6 +349,15 @@ try:
     machine.succeed("sleep 2")
     machine.fail("curl --fail --max-time 2 http://127.0.0.1:18762")
     inside("systemctl --user stop sandbox-network-listener.service")
+    machine.succeed(
+        as_owner(
+            "nix --extra-experimental-features nix-command store info --json "
+            "| grep -Eq '\"trusted\"[[:space:]]*:[[:space:]]*true'"
+        )
+    )
+    inside(
+        "nix store info --json | grep -Eq '\"trusted\"[[:space:]]*:[[:space:]]*false'"
+    )
     inside(
         f'result=$(timeout 30 nix build --option substitute false --no-link --print-out-paths --file {NIX_BUILD_CHECK}); grep daemon-proxy-works "$result"'
     )
@@ -409,6 +418,21 @@ try:
         f"--service-type=exec {COREUTILS}/bin/test ! -r /shared/host-root-secret"
     )
     machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
+
+    # Host service upgrades may restart machined. Its availability orders
+    # sandbox startup, but its lifetime must not own running containers.
+    invocation_before_machined_restart = machine.succeed(
+        "systemctl show sandbox-ualice-check@main.service -p InvocationID --value"
+    ).strip()
+    machine.succeed("systemctl restart systemd-machined.service")
+    machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
+    assert (
+        machine.succeed(
+            "systemctl show sandbox-ualice-check@main.service -p InvocationID --value"
+        ).strip()
+        == invocation_before_machined_restart
+    )
+    inside("true", "--join")
 
     result = inside("""
         systemctl --user is-active --quiet postgres.service

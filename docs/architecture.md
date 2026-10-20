@@ -101,14 +101,18 @@ Compatibility compares the actual parsed values,
 including ordinary binds, device lines, and device-pattern lines, rather than
 hashes. Guest UID/GID, home, and portal app identity also belong to that contract;
 entry commands, environment, system, and activation paths may change in place.
+Restarting `systemd-machined` or removing a profile from the next configuration
+does not stop an existing instance; instances run until explicitly stopped or
+the host shuts down.
 Profile and environment records use a versioned byte-length framing so tabs and
 newlines in values cannot become additional fields. Legacy line records remain
 readable for existing generations. The public `nk` CLI contains no supervisor,
 reload, or privileged-entry mode. Polkit authorizes only `nook-root`, whose
 entry subcommand verifies the caller against the current installed profile.
 Its system-service subcommands reject every invocation carrying pkexec
-credentials. Unprivileged portal and Nix proxy helpers remain in `nk` and are
-started only after the supervisor drops to the sandbox owner's credentials.
+credentials. The unprivileged portal helpers remain in `nk`. The Nix broker
+uses Nix's own daemon implementation and both kinds of helper run with the
+sandbox owner's credentials.
 
 Shell and command launches translate the host's physical current directory
 when it lies within the selected instance's backing home. Symlink aliases work;
@@ -214,10 +218,12 @@ connection directly. Systemd tools and Podman always use the private bus.
 `see`, `talk`, or `own`; the system bus is otherwise not forwarded. Required
 portal rules are combined with extra application policies.
 
-`nix = true` proxies the host daemon with the owner's host credentials. Adding
-`homeManagerModules` also enables this proxy for activation, even with
-`nix = false`; the connection remains available to the instance. It provides the
-same daemon permissions the owner has, not a separate guest daemon.
+`nix = true` exposes a broker backed by the host daemon. Adding
+`homeManagerModules` also enables it for activation, even with `nix = false`;
+the connection remains available to the instance. The broker connects upstream
+as the owner but forces every guest connection to Nix's untrusted-client policy.
+Consequently, membership in the host daemon's `trusted-users` list does not pass
+into the sandbox. This is a brokered host store, not a separate guest daemon.
 
 ## Networking and hostnames
 
