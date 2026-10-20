@@ -141,8 +141,34 @@ let
           fi
         ''}
       '';
+      homeManagerRecovery = pkgs.writeShellScriptBin "nook-home-manager" ''
+        set -eu
+        if [ "''${1:-}" != switch ]; then
+          echo "Usage: nook-home-manager switch [-b EXTENSION]" >&2
+          exit 2
+        fi
+        shift
+        if [ "$#" -eq 0 ]; then
+          exec ${activation}
+        fi
+        if [ "$#" -eq 2 ] && { [ "$1" = -b ] || [ "$1" = --backup-extension ]; }; then
+          case "$2" in *[!A-Za-z0-9._-]*|"") echo "Invalid backup extension" >&2; exit 2;; esac
+          export HOME_MANAGER_BACKUP_EXT="$2"
+          exec ${activation}
+        fi
+        echo "Usage: nook-home-manager switch [-b EXTENSION]" >&2
+        exit 2
+      '';
       entry = pkgs.writeShellScript "sandbox-command-${name}" ''
         set -eu
+        # Entry is dispatched by the trusted guest user manager. Export the
+        # evaluated guest session environment here as well, so applications do
+        # not depend on client environment forwarding or manager import state.
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (
+            name: value: "export ${name}=${lib.escapeShellArg (toString value)}"
+          ) container.systemd.globalEnvironment
+        )}
         export HOME=${lib.escapeShellArg home}
         export XDG_RUNTIME_DIR=/run/user/${toString uid}
         export PATH=${sessionTools}/bin:/run/wrappers/bin:${appPackage}/bin:/run/current-system/sw/bin
@@ -168,6 +194,9 @@ let
                   --run 'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; unset DBUS_SYSTEM_BUS_ADDRESS'
               fi
             done
+            ${lib.optionalString (hm != null) ''
+              ln -s ${homeManagerRecovery}/bin/nook-home-manager "$out/bin/nook-home-manager"
+            ''}
           '';
       container =
         (import "${pkgs.path}/nixos/lib/eval-config.nix" {
@@ -595,7 +624,9 @@ in
     enable = lib.mkEnableOption "Nook sandbox profiles and launchers";
     package = lib.mkOption {
       type = types.package;
-      default = pkgs.nook or (pkgs.callPackage ../. { });
+      # Keep generated profile formats and their parser on the same revision.
+      # An unrelated pkgs.nook overlay may refer to an older module API.
+      default = pkgs.callPackage ../. { };
       defaultText = lib.literalExpression "pkgs.callPackage <nook> { }";
       description = "Nook launcher package, shared by this user's host services and guest helpers.";
     };

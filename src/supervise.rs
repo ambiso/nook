@@ -1464,7 +1464,8 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
             stopping = true;
         }
-        if !ready && !stopping && (received_ready(&notifications)? || Instant::now() > deadline) {
+        let timed_out = Instant::now() > deadline;
+        if !ready && !stopping && (received_ready(&notifications)? || timed_out) {
             let status = Command::new("systemctl")
                 .args([
                     "--machine",
@@ -1490,13 +1491,19 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
                         "sandbox-ready.service",
                     ])
                     .status();
-                let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
-                let reason = if Instant::now() > deadline {
-                    "container boot or Home Manager activation timed out"
-                } else {
-                    "sandbox home activation failed; inspect the host sandbox unit's journal"
-                };
-                return Err(reason.into());
+                if timed_out {
+                    let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+                    return Err("container boot or Home Manager activation timed out".into());
+                }
+                fs::write(
+                    runtime.join("activation-failed"),
+                    b"Home Manager activation failed\n",
+                )?;
+                eprintln!(
+                    "Home Manager activation failed; keeping the sandbox running for recovery"
+                );
+                notify_ready()?;
+                ready = true;
             }
         }
         if !stopping {

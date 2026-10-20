@@ -265,6 +265,11 @@ nk stop --all                             # stop every running sandbox
 nk delete dev --name my-project        # confirm permanent removal of saved data
 ```
 
+If Home Manager refuses to replace an existing file, Nook keeps the sandbox
+running and prints a recovery warning before entering it. Inside the sandbox,
+run `nook-home-manager switch -b backup` to preserve each conflict with a
+`.backup` suffix, then exit, stop the instance, and launch it again.
+
 `launch` also accepts the aliases `l`, `start`, and `s`: `nk s dev` and
 `nk start dev` do the same thing as `nk launch dev`. Add `--join` to fail if the
 selected instance is stopped. This flag also works with `gui` and `shell`;

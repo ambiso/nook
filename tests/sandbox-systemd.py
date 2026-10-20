@@ -149,27 +149,43 @@ try:
         grep -Fx 'legacy directory data' ~/legacy-directory.pre-systemd/original
         grep -Fx 'managed directory' ~/legacy-directory/managed
     """)
-    # Ordinary homes retain HM's collision checks. Failure must survive the
-    # disposable guest journal and must not be misreported as a timeout.
+    # Ordinary homes retain HM's collision checks. A failed activation leaves
+    # the guest available for an ordinary backup-and-retry command.
     machine.succeed(
         as_owner(
             "mkdir -p ~/.sandbox/check/instances/n-collision/home; "
             "echo 'keep my edit' > ~/.sandbox/check/instances/n-collision/home/activation-check"
         )
     )
-    machine.fail(launcher("launch check --instance n-collision -- true"))
+    recovery_output = machine.succeed(
+        launcher("launch check --instance n-collision -- true") + " 2>&1"
+    )
+    assert "Home Manager activation failed; continuing in recovery mode" in recovery_output
     failure_log = machine.succeed(
         "journalctl -b -u sandbox-ualice-check@n-collision.service --no-pager"
     )
     assert "would be clobbered" in failure_log
-    assert "sandbox home activation failed" in failure_log
+    assert "Home Manager activation failed" in failure_log
     assert "activation timed out" not in failure_log
+    machine.succeed("systemctl is-active --quiet sandbox-ualice-check@n-collision.service")
+    machine.succeed("test -f /run/nook-ualice-check-n-collision/activation-failed")
     machine.succeed(
         as_owner(
             "grep -Fx 'keep my edit' ~/.sandbox/check/instances/n-collision/home/activation-check; "
             "test ! -e ~/.sandbox/check/instances/n-collision/home/activation-check.pre-systemd"
         )
     )
+    cli(
+        "launch check --instance n-collision -- "
+        "nook-home-manager switch -b nook-backup"
+    )
+    machine.succeed(
+        as_owner(
+            "grep -Fx activated ~/.sandbox/check/instances/n-collision/home/activation-check; "
+            "grep -Fx 'keep my edit' ~/.sandbox/check/instances/n-collision/home/activation-check.nook-backup"
+        )
+    )
+    cli("stop check --instance n-collision")
     # A completed home skips activation on restart, but a different generation
     # must activate even when it uses the same persistent home. Removing the
     # success marker forces a retry, as after an interrupted activation.
@@ -403,12 +419,21 @@ try:
         psql -h "$XDG_RUNTIME_DIR" -d postgres -Atc 'SELECT 42'
     """)
     assert "42" in result
+    # GUI backend selection comes from the trusted guest profile even if the
+    # long-lived user manager no longer carries its initial environment.
+    inside(
+        "systemctl --user unset-environment "
+        "NIXOS_OZONE_WL QT_QPA_PLATFORM MOZ_ENABLE_WAYLAND"
+    )
     inside("""
         touch ~/persistent
         echo shared > /shared/marker
         test ! -e /tmp/.X11-unix/X77
         test "$DISPLAY" = :0
         test -z "${XAUTHORITY:-}"
+        test "$NIXOS_OZONE_WL" = 1
+        test "$QT_QPA_PLATFORM" = wayland
+        test "$MOZ_ENABLE_WAYLAND" = 1
         test "$SANDBOX_SHARED_MODULE" = applied
         test "$SANDBOX_PROFILE_IMPORT" = applied
         test -S /run/user/1000/bus

@@ -80,6 +80,12 @@ Fresh homes, changed generations, and failed activations run activation again.
 Use systemd services for work needed at every boot. Remove the success marker
 before restarting to force reactivation.
 
+Home Manager keeps its normal collision protection. If activation fails, the
+sandbox remains running in recovery mode and Nook prints the recovery steps.
+Enter it with `nk shell PROFILE`, then run
+`nook-home-manager switch -b backup` to preserve conflicts beside their original
+paths. Stop and relaunch the instance after activation succeeds.
+
 Rebuilds do not restart running instances (`restartIfChanged = false`). If a
 service's launch-time supervisor contract is unchanged, NixOS requests an
 `ExecReload`. The narrow `nook-root` helper holds a per-instance reload lock, verifies the

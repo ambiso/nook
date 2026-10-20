@@ -1,14 +1,14 @@
 { pkgs, home-manager }:
 let
   lib = pkgs.lib;
-  evaluate =
-    extra:
-    (import "${pkgs.path}/nixos/lib/eval-config.nix" {
-      system = pkgs.stdenv.hostPlatform.system;
+  evaluateWith =
+    packageSet: extra:
+    (import "${packageSet.path}/nixos/lib/eval-config.nix" {
+      system = packageSet.stdenv.hostPlatform.system;
       modules = [
         (import ../nix/nixos.nix { inherit home-manager; })
         {
-          nixpkgs.pkgs = pkgs;
+          nixpkgs.pkgs = packageSet;
           system.stateVersion = "26.05";
           users.users.alice = {
             isNormalUser = true;
@@ -31,6 +31,7 @@ let
         extra
       ];
     }).config;
+  evaluate = evaluateWith pkgs;
   automatic = evaluate { };
   explicit = evaluate {
     users.users.alice.uid = 4242;
@@ -42,6 +43,10 @@ let
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
   };
+  staleNook = pkgs.writeShellScriptBin "nk" "exit 99";
+  stalePackageSet = pkgs.extend (_: _: { nook = staleNook; });
+  stalePackageDefault =
+    (evaluateWith stalePackageSet { }).home-manager.users.alice.programs.nook.package;
   appearanceGuest =
     extra:
     (evaluate {
@@ -125,6 +130,7 @@ assert lib.any (
 assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
+assert stalePackageDefault.outPath != staleNook.outPath;
 assert themeReachesApplications portalTheme "xdgdesktopportal";
 assert themeReachesApplications qtTheme "qt5ct";
 assert themeReachesApplications explicitTheme "custom";

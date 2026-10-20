@@ -288,6 +288,21 @@ fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> R
         }
         return Err(format!("sandbox startup failed; inspect journalctl -u {unit}").into());
     }
+    if profile
+        .supervisor_runtime(instance)?
+        .join("activation-failed")
+        .exists()
+    {
+        eprintln!(
+            concat!(
+                "nk: Home Manager activation failed; continuing in recovery mode.\n",
+                "Run `nook-home-manager switch -b backup` inside the sandbox, ",
+                "then stop and relaunch {}/{}."
+            ),
+            profile.get("name")?,
+            instance
+        );
+    }
     Ok(())
 }
 
