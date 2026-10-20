@@ -107,7 +107,10 @@ the host shuts down.
 Profile and environment records use a versioned byte-length framing so tabs and
 newlines in values cannot become additional fields. Legacy line records remain
 readable for existing generations. The public `nk` CLI contains no supervisor,
-reload, or privileged-entry mode. Polkit authorizes only `nook-root`, whose
+reload, or privileged-entry mode. Polkit authorizes only the current `nook-root`
+through a root-managed per-owner path under `/etc/sandbox/helpers`; launchers
+from the preceding Home Manager generation therefore keep working while a host
+switch publishes the new generation. The helper
 entry subcommand verifies the caller against the current installed profile.
 Its system-service subcommands reject every invocation carrying pkexec
 credentials. The unprivileged portal helpers remain in `nk`. The Nix broker
@@ -160,11 +163,15 @@ changes. Existing open handles keep the kernel's usual semantics.
 
 ## Display, audio, and desktop integration
 
-The selected Wayland socket is forwarded. Host `DISPLAY`, `XAUTHORITY`, and X11
+The selected Wayland socket is forwarded. The guest entry environment declares
+`XDG_SESSION_TYPE=wayland`, which newer Electron versions use to select Ozone's
+Wayland backend. Host `DISPLAY`, `XAUTHORITY`, and X11
 sockets are excluded. `startX = true` starts a private
 [`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite) for
 applications needing X11; guest `:0` refers to that server. Separate network
 namespaces also keep host abstract X11 sockets out of reach.
+OpenSSH uses a guest-provided askpass helper for FIDO touch and PIN prompts,
+rather than its absent compile-time `libexec/ssh-askpass` path.
 
 The direct Wayland connection exposes every global that the host compositor
 offers to that connection. This includes ordinary clipboard protocols: a GUI

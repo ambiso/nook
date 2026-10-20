@@ -71,6 +71,7 @@ let
     MOZ_ENABLE_WAYLAND = "0";
     QT_QPA_PLATFORM = "xcb";
     NIXOS_OZONE_WL = "0";
+    XDG_SESSION_TYPE = "x11";
     GDK_DEBUG = "fatal-warnings";
     GTK_USE_PORTAL = "0";
     GIO_USE_PORTALS = "0";
@@ -177,6 +178,10 @@ assert guest.sandboxes.dev._container.programs.dconf.enable;
 assert lib.elem pkgs.dconf guest.sandboxes.dev._container.services.dbus.packages;
 assert lib.elem pkgs.dconf guest.sandboxes.dev._container.systemd.packages;
 assert automatic.systemd.services.${service}.serviceConfig.RuntimeDirectory == "nook-ualice-dev-%i";
+assert
+  automatic.environment.etc."sandbox/helpers/ualice".source
+  == "${guest.package}/bin/.nook-root-wrapped";
+assert lib.hasInfix "/etc/sandbox/helpers/ualice" automatic.security.polkit.extraConfig;
 assert explicit.systemd.services ? ${service};
 assert !(automatic.systemd.services ? "sandbox-4242-dev@");
 assert explicit.systemd.services."sandbox-4242-dev@".restartIfChanged == false;

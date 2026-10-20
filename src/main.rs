@@ -310,18 +310,12 @@ enum EntryPoint {
     Gui,
 }
 
-fn privileged_helper() -> Result<PathBuf> {
-    let current = env::current_exe()?;
-    let name = current.file_name().and_then(|name| name.to_str());
-    let binary = if name == Some(".nk-wrapped") {
-        ".nook-root-wrapped"
-    } else {
-        "nook-root"
-    };
-    Ok(current
-        .parent()
-        .ok_or("nk executable has no parent directory")?
-        .join(binary))
+fn privileged_helper(profile: &Profile) -> Result<PathBuf> {
+    // Always enter through the root-managed host registry. A launcher from the
+    // previous Home Manager generation may remain visible briefly during a
+    // host switch; tying pkexec authorization to its sibling store path would
+    // make that harmless skew produce an authentication prompt.
+    Ok(PathBuf::from("/etc/sandbox/helpers").join(profile.owner_key()?))
 }
 
 fn launch(
@@ -360,7 +354,7 @@ fn launch(
     // helper, which validates the installed profile and enters as its owner.
     let mut enter = Command::new("/run/wrappers/bin/pkexec");
     enter
-        .arg(privileged_helper()?)
+        .arg(privileged_helper(profile)?)
         .arg("enter")
         .arg(profile.get("name")?)
         .arg(instance);

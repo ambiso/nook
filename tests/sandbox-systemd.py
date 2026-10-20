@@ -447,7 +447,8 @@ try:
     # long-lived user manager no longer carries its initial environment.
     inside(
         "systemctl --user unset-environment "
-        "NIXOS_OZONE_WL QT_QPA_PLATFORM MOZ_ENABLE_WAYLAND"
+        "NIXOS_OZONE_WL QT_QPA_PLATFORM MOZ_ENABLE_WAYLAND XDG_SESSION_TYPE "
+        "SSH_ASKPASS"
     )
     inside("""
         touch ~/persistent
@@ -457,6 +458,8 @@ try:
         test -z "${XAUTHORITY:-}"
         test "$NIXOS_OZONE_WL" = 1
         test "$QT_QPA_PLATFORM" = wayland
+        test "$XDG_SESSION_TYPE" = wayland
+        test -x "$SSH_ASKPASS"
         test "$MOZ_ENABLE_WAYLAND" = 1
         test "$SANDBOX_SHARED_MODULE" = applied
         test "$SANDBOX_PROFILE_IMPORT" = applied
@@ -717,6 +720,9 @@ for desktop_id, query in [
     incompatible_profile = machine.succeed(
         "readlink -f /run/nook-ualice-fallback-main/profile-root"
     ).strip()
+    cli("launch no-portals -- true")
+    cli("stop no-portals")
+    machine.fail("systemctl is-active --quiet sandbox-ualice-no-portals@main.service")
     assert "\t" in machine.succeed(f"cat {old_profile}/profile").split("activation\t", 1)[1]
     assert "\t" in machine.succeed(f"cat {old_profile}/profile").split("system\t", 1)[1]
     machine.succeed(f"{UPDATED_SYSTEM}/bin/switch-to-configuration test", timeout=120)

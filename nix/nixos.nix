@@ -102,6 +102,12 @@ in
       map (
         p: lib.nameValuePair "sandbox/profiles/${p.owner}/${p.name}" { source = p.profile._profile; }
       ) profiles
+      ++ lib.mapAttrsToList (
+        username: user:
+        lib.nameValuePair "sandbox/helpers/${ownerKey username}" {
+          source = "${user.programs.nook.package}/bin/.nook-root-wrapped";
+        }
+      ) users
     );
     security.polkit.enable = lib.mkIf (profiles != [ ]) true;
     xdg.portal.enable = lib.mkIf (lib.any (
@@ -120,9 +126,10 @@ in
         polkit.addRule(function(action, subject) {
           if (subject.user === ${builtins.toJSON username}
               && action.id === "org.freedesktop.policykit.exec"
-              && action.lookup("program") === "${
-                users.${username}.programs.nook.package
-              }/bin/.nook-root-wrapped") {
+              && (action.lookup("program") === "/etc/sandbox/helpers/${ownerKey username}"
+                  || action.lookup("program") === "${
+                    users.${username}.programs.nook.package
+                  }/bin/.nook-root-wrapped")) {
             return polkit.Result.YES;
           }
         });

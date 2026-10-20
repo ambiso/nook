@@ -152,6 +152,9 @@ pkgs.testers.runNixOSTest {
         # Exercise the restart-required path while check exercises a compatible
         # live reload during the same host switch.
         fallback.network = pkgs.lib.mkForce true;
+        # A changed profile whose instance was stopped before the switch must
+        # not leave a stale reload job that fails the host activation.
+        no-portals.environment.NOOK_STOPPED_REVISION = "updated";
       };
     };
     services.pipewire.enable = true;

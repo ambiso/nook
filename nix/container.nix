@@ -23,6 +23,9 @@ let
   backendDefaults = {
     MOZ_ENABLE_WAYLAND = "1";
     QT_QPA_PLATFORM = "wayland";
+    # Electron 39+ removed ELECTRON_OZONE_PLATFORM_HINT and chooses its
+    # default Ozone backend from the session type instead.
+    XDG_SESSION_TYPE = "wayland";
     NIXOS_OZONE_WL = "1";
   };
   appearanceDefaults = {
@@ -103,7 +106,12 @@ let
   # respects variables explicitly unset with null in a guest module.
   sessionEnvironment =
     lib.filterAttrs (name: _: lib.elem name sessionVariableNames) config.environment.variables
-    // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; };
+    // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; }
+    // {
+      # OpenSSH's FIDO signing path uses askpass as a passive touch/PIN
+      # notifier. Its compiled-in libexec path is not part of the Nix package.
+      SSH_ASKPASS = "${pkgs.openssh-askpass}/libexec/gtk-ssh-askpass";
+    };
 
 in
 {
