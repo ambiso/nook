@@ -178,6 +178,10 @@ in
     ];
   };
   fonts.packages = with pkgs; [
+    # GNOME's Settings portal advertises Adwaita Sans and Adwaita Mono as
+    # interface fonts. Keep those names resolvable when appearance settings
+    # are inherited from a GNOME host.
+    adwaita-fonts
     dejavu_fonts
     liberation_ttf
     gyre-fonts

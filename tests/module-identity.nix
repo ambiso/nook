@@ -147,6 +147,7 @@ assert lib.all (
 ) (builtins.attrNames preferenceOverrides);
 assert !configuredPreferences.fonts.fontconfig.enable;
 assert portalTheme.fonts.fontconfig.enable;
+assert lib.elem pkgs.adwaita-fonts portalTheme.fonts.packages;
 assert !(unsetPreferences.environment.variables ? GDK_DEBUG);
 assert !(unsetPreferences.systemd.globalEnvironment ? GDK_DEBUG);
 assert
