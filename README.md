@@ -249,8 +249,9 @@ Portal environment flags control application behavior; the profile's `portals`
 option controls whether Nook grants portal access.
 
 Nook forwards common desktop identity variables such as
-`XDG_CURRENT_DESKTOP` automatically. Extend that allow-list per sandbox when an
-application needs another value from the host session:
+`XDG_CURRENT_DESKTOP`, along with `TERM` and `COLORTERM`, automatically. Extend
+that allow-list per sandbox when an application needs another value from the
+host session:
 
 ```nix
 programs.nook.sandboxes.dev.hostEnvironment = [ "MY_EDITOR_INTEGRATION" ];

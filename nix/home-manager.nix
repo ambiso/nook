@@ -20,6 +20,10 @@ let
     "KDE_FULL_SESSION"
     "KDE_SESSION_VERSION"
   ];
+  terminalEnvironmentVariables = [
+    "TERM"
+    "COLORTERM"
+  ];
   mountType = types.submodule {
     options = {
       source = lib.mkOption {
@@ -520,7 +524,7 @@ let
         };
       };
       config = {
-        hostEnvironment = lib.mkBefore desktopEnvironmentVariables;
+        hostEnvironment = lib.mkBefore (desktopEnvironmentVariables ++ terminalEnvironmentVariables);
         _profile = profile;
         _container = container;
         _appPackage = appPackage;

@@ -19,6 +19,7 @@ def launcher(args):
     # Deliberately supply host X11 variables; only Wayland should be forwarded.
     return as_owner(
         "WAYLAND_DISPLAY=wayland-test DISPLAY=:77 XDG_CURRENT_DESKTOP=GNOME "
+        "TERM=xterm-256color COLORTERM=truecolor "
         "NOOK_TEST_HOST_ENV=forwarded XAUTHORITY=/home/alice/host.xauth nk " + args
     )
 
@@ -466,6 +467,8 @@ try:
         test "$QT_QPA_PLATFORM" = wayland
         test "$XDG_SESSION_TYPE" = wayland
         test "$XDG_CURRENT_DESKTOP" = GNOME
+        test "$TERM" = xterm-256color
+        test "$COLORTERM" = truecolor
         test "$NOOK_TEST_HOST_ENV" = forwarded
         test -x "$SSH_ASKPASS"
         test "$MOZ_ENABLE_WAYLAND" = 1

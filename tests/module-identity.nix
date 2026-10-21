@@ -133,6 +133,8 @@ assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
 assert lib.elem "XDG_CURRENT_DESKTOP" guest.sandboxes.dev.hostEnvironment;
+assert lib.elem "TERM" guest.sandboxes.dev.hostEnvironment;
+assert lib.elem "COLORTERM" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "CUSTOM_HINT"
   explicit.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
 assert stalePackageDefault.outPath != staleNook.outPath;
