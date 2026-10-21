@@ -40,6 +40,7 @@ let
       { networking.hostName = "workstation"; }
     ];
     home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment = [ "CUSTOM_HINT" ];
+    home-manager.users.alice.programs.nook.sandboxes.dev.extraSystemCalls = [ "perf_event_open" ];
   };
   nixDefaults = evaluate {
     home-manager.users.alice.programs.nook.sandboxes.dev.nix = true;
@@ -148,6 +149,10 @@ assert nixDefaults.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuild
 assert !nixLogsDisabled.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
 assert lib.elem "CUSTOM_HINT"
   explicit.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
+assert
+  explicit.home-manager.users.alice.programs.nook.sandboxes.dev.extraSystemCalls == [
+    "perf_event_open"
+  ];
 assert stalePackageDefault.outPath != staleNook.outPath;
 assert themeReachesApplications portalTheme "xdgdesktopportal";
 assert themeReachesApplications qtTheme "qt5ct";

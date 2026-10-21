@@ -347,6 +347,7 @@ pkgs.testers.runNixOSTest {
         sessionBusPolicies."org.freedesktop.secrets" = "talk";
         dnsSearch = [ "sandbox.test" ];
         startX = true;
+        extraSystemCalls = [ "perf_event_open" ];
         systemBusPolicies."org.freedesktop.hostname1" = "talk";
         podman = true;
         nix = true;
@@ -386,6 +387,7 @@ pkgs.testers.runNixOSTest {
           podman
           curl
           libnotify
+          perf
           qtPortalCheck
         ];
         bindMounts = [

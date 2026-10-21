@@ -191,6 +191,7 @@ fn supervisor_identity(profile: &Profile) -> Result<String> {
         "hostSessionBus",
         "portals",
         "inheritAppearance",
+        "extraSystemCalls",
         "supervisorContract",
         "supervisorExecutable",
     ] {
@@ -260,6 +261,7 @@ mod reload_tests {
                 "hostSessionBus\t1\n",
                 "portals\t0\n",
                 "inheritAppearance\t0\n",
+                "extraSystemCalls\tperf_event_open\n",
                 "supervisorContract\t1\n",
                 "supervisorExecutable\t/nix/store/test-nook/bin/.nook-root-wrapped\n",
             ),
@@ -1182,6 +1184,12 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     ];
     let namespace = netns(profile, &mut helpers)?;
     nspawn_arguments.push(format!("--network-namespace-path={}", namespace.display()));
+    let system_call_filter = profile.get("extraSystemCalls")?;
+    if !system_call_filter.is_empty() {
+        // nspawn always starts from its container allowlist. A positive filter
+        // adds narrowly selected calls without replacing that baseline.
+        nspawn_arguments.push(format!("--system-call-filter={system_call_filter}"));
+    }
     if profile.flag("network") {
         // pasta configures a dedicated netns and drops host root privileges.
         let mut pasta = Command::new("pasta");

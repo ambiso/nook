@@ -362,6 +362,7 @@ try:
     inside(
         f'result=$(timeout 30 nix build --option substitute false --no-link --print-out-paths --file {NIX_BUILD_CHECK}); grep daemon-proxy-works "$result"'
     )
+    inside("perf stat -e task-clock -- true")
     inside(
         f'drv=$(nix-instantiate {NIX_BUILD_CHECK}); nix-log "$drv" | grep -F daemon-proxy-build-log'
     )

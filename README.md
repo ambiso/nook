@@ -97,11 +97,12 @@ in
       hostSessionBus = lib.mkDefault false;
     };
     sandboxes.dev = {
-      packages = with pkgs; [ git ripgrep rustup qemu ];
+      packages = with pkgs; [ git ripgrep rustup qemu perf ];
       nix = true;
       podman = true;
       portals = true;
       startX = true;
+      extraSystemCalls = [ "perf_event_open" ]; # Let perf profile guest processes.
       devices = [
         "/dev/kvm"
         # "/dev/kfd" # AMD ROCm compute; gpu = true already exposes /dev/dri.

@@ -327,6 +327,7 @@ let
         hostSessionBus = if cfg.hostSessionBus then 1 else 0;
         portals = if cfg.portals then 1 else 0;
         inheritAppearance = if cfg.inheritAppearance then 1 else 0;
+        extraSystemCalls = lib.concatStringsSep " " cfg.extraSystemCalls;
         portalAppId = "eu.ambiso.sandbox.profile_${lib.replaceStrings [ "-" ] [ "_" ] name}";
       });
       mountFile = pkgs.writeText "sandbox-mounts-${name}" (
@@ -449,6 +450,12 @@ let
             "none"
           ];
           description = "Arguments for pasta. Automatic host/guest port forwarding is disabled by default; add explicit mappings when needed.";
+        };
+        extraSystemCalls = lib.mkOption {
+          type = types.listOf (types.strMatching "[@A-Za-z0-9_-]+");
+          default = [ ];
+          example = [ "perf_event_open" ];
+          description = "System calls or systemd syscall groups to add to systemd-nspawn's default allowlist.";
         };
         dnsSearch = lib.mkOption {
           type = types.listOf types.str;
