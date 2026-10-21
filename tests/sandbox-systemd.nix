@@ -349,6 +349,7 @@ pkgs.testers.runNixOSTest {
         startX = true;
         systemBusPolicies."org.freedesktop.hostname1" = "talk";
         podman = true;
+        nix = true;
         nixosModules = [
           {
             networking.hosts = {
@@ -504,7 +505,7 @@ pkgs.testers.runNixOSTest {
           # Reattach dependency context when the guest evaluates this file, so
           # the host daemon includes Bash's closure in the build sandbox.
           builder = (builtins.storePath "${pkgs.bash}") + "/bin/bash";
-          args = [ "-c" "echo daemon-proxy-works > $out" ];
+          args = [ "-c" "echo daemon-proxy-build-log >&2; echo daemon-proxy-works > $out" ];
         }
       ''}"
     ''

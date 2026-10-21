@@ -14,6 +14,7 @@
   podman,
   portals,
   inheritAppearance,
+  nixBuildLogs,
   dnsSearch,
   launcher,
   devicePatterns,
@@ -311,6 +312,16 @@ in
     "L+ %t/pulse/native - - - - /run/host/pulse"
   ]
   ++ lib.optional portals "L+ %t/doc - - - - /run/host/doc";
+  # Nix's read-only local store still expects its standard state-directory
+  # skeleton to exist. Keep these empty directories in the ephemeral guest
+  # root; only the host database and build logs are mounted read-only.
+  systemd.tmpfiles.rules = lib.optionals nixBuildLogs [
+    "d /nix/var/nix/profiles 0755 root root -"
+    "d /nix/var/nix/profiles/per-user 0755 root root -"
+    "d /nix/var/nix/temproots 0755 root root -"
+    "d /nix/var/nix/gcroots 0755 root root -"
+    "d /nix/var/nix/gcroots/per-user 0755 root root -"
+  ];
   systemd.services.sandbox-device-links = lib.mkIf (devicePatterns != [ ]) {
     description = "Publish explicitly selected hotplug character devices";
     wantedBy = [ "multi-user.target" ];

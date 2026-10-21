@@ -61,6 +61,7 @@ let
           "${home}/${cfg.stateDirectory}";
       uid = outer.guest.uid;
       gid = outer.guest.gid;
+      nixEnabled = cfg.nix || cfg.nixBuildLogs || hm != null;
       hm =
         if cfg.homeManagerModules == [ ] then
           null
@@ -173,6 +174,12 @@ let
         echo "Usage: nook-home-manager switch [-b EXTENSION]" >&2
         exit 2
       '';
+      nixLog = pkgs.writeShellScriptBin "nix-log" ''
+        exec ${pkgs.nix}/bin/nix \
+          --extra-experimental-features 'nix-command read-only-local-store' \
+          --offline \
+          log --store 'local?read-only=true' "$@"
+      '';
       entry = pkgs.writeShellScript "sandbox-command-${name}" ''
         set -eu
         # Entry is dispatched by the trusted guest user manager. Export the
@@ -211,6 +218,9 @@ let
             ${lib.optionalString (hm != null) ''
               ln -s ${homeManagerRecovery}/bin/nook-home-manager "$out/bin/nook-home-manager"
             ''}
+            ${lib.optionalString cfg.nixBuildLogs ''
+              ln -s ${nixLog}/bin/nix-log "$out/bin/nix-log"
+            ''}
           '';
       container =
         (import "${pkgs.path}/nixos/lib/eval-config.nix" {
@@ -232,6 +242,7 @@ let
               podman
               portals
               inheritAppearance
+              nixBuildLogs
               dnsSearch
               devicePatterns
               ;
@@ -262,6 +273,18 @@ let
         );
       mounts =
         cfg.bindMounts
+        ++ lib.optionals cfg.nixBuildLogs [
+          {
+            source = "/nix/var/log/nix";
+            target = "/nix/var/log/nix";
+            readOnly = true;
+          }
+          {
+            source = "/nix/var/nix/db";
+            target = "/nix/var/nix/db";
+            readOnly = true;
+          }
+        ]
         ++ lib.optionals cfg.gpu [
           {
             source = "${pkgs.mesa}";
@@ -300,7 +323,7 @@ let
         network = if cfg.network then 1 else 0;
         podman = if cfg.podman then 1 else 0;
         audio = if cfg.audio then 1 else 0;
-        nix = if cfg.nix || hm != null then 1 else 0;
+        nix = if nixEnabled then 1 else 0;
         hostSessionBus = if cfg.hostSessionBus then 1 else 0;
         portals = if cfg.portals then 1 else 0;
         inheritAppearance = if cfg.inheritAppearance then 1 else 0;
@@ -446,6 +469,18 @@ let
           type = types.bool;
           default = false;
           description = "Broker untrusted-client access to the host Nix daemon.";
+        };
+        nixBuildLogs = lib.mkOption {
+          type = types.bool;
+          default = cfg.nix;
+          defaultText = lib.literalExpression "config.nix";
+          description = ''
+            Expose the host's retained Nix build logs and store database
+            read-only, and install nix-log for querying them. This defaults to
+            the value of nix, can be disabled independently, and implies Nix
+            daemon access when enabled explicitly. It reveals logs from builds
+            requested by other host users and sandboxes.
+          '';
         };
         podman = lib.mkOption {
           type = types.bool;

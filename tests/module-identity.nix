@@ -41,6 +41,15 @@ let
     ];
     home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment = [ "CUSTOM_HINT" ];
   };
+  nixDefaults = evaluate {
+    home-manager.users.alice.programs.nook.sandboxes.dev.nix = true;
+  };
+  nixLogsDisabled = evaluate {
+    home-manager.users.alice.programs.nook.sandboxes.dev = {
+      nix = true;
+      nixBuildLogs = false;
+    };
+  };
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
   };
@@ -135,6 +144,8 @@ assert guest.guest.uid == 1000 && guest.guest.gid == 100;
 assert lib.elem "XDG_CURRENT_DESKTOP" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "TERM" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "COLORTERM" guest.sandboxes.dev.hostEnvironment;
+assert nixDefaults.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
+assert !nixLogsDisabled.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
 assert lib.elem "CUSTOM_HINT"
   explicit.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
 assert stalePackageDefault.outPath != staleNook.outPath;

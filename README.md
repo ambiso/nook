@@ -221,6 +221,21 @@ These settings apply inside dev, including its named and ephemeral instances.
 The host's Home Manager settings are not copied into the guest. Nook supplies
 the username, home directory, and state version automatically and activates the
 modules once per successful generation in each instance's home.
+
+Nix-enabled sandboxes can read the host's retained build logs by default:
+
+```nix
+programs.nook.sandboxes.dev = {
+  nix = true;
+};
+```
+
+Use `nix-log` in that sandbox like `nix log`, for example
+`nix-log /nix/store/…-package.drv`. Builds and ordinary Nix commands still use
+the untrusted daemon connection. Build logs can contain paths, command lines,
+and build output from every host user and sandbox. Set `nixBuildLogs = false`
+to retain Nix access without exposing them.
+
 Guest Home Manager modules can also set `dconf.settings`: Nook provides the
 native guest dconf service. This configures the guest's database, separately
 from the Settings portal used to follow the host's appearance.
