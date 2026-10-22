@@ -249,9 +249,11 @@ programs.nook.sandboxes.dev.nixosModules = [ {
 
 Pasta provides networking in a separate namespace. Automatic forwarding is
 disabled in both directions, so host listeners do not reserve guest loopback
-ports and guest listeners are not published on the host. Use `networkArgs` to
-configure explicit mappings or `network = false` for an offline instance. Even
-offline instances retain a separate namespace for abstract-socket isolation.
+ports and guest listeners are not published on the host. Nook prepends those
+safe defaults to `networkArgs`; a later explicit pasta port option replaces
+only its corresponding `none` setting. Use `networkArgs` to configure explicit
+mappings or `network = false` for an offline instance. Even offline instances
+retain a separate namespace for abstract-socket isolation.
 
 `dnsSearch` configures client-side search domains. Forwarding a DNS zone on the
 host does not add a guest search domain. Guest-only hostname overrides use normal

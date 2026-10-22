@@ -121,9 +121,7 @@ in
       environment.MOZ_ENABLE_WAYLAND = "1";
       # Let a host browser's Zotero Connector reach this instance.
       networkArgs = [
-        "--no-map-gw" "--dns-forward" "169.254.1.1"
         "--tcp-ports" "127.0.0.1/23119" "--host-lo-to-ns-lo"
-        "--udp-ports" "none" "--tcp-ns" "none" "--udp-ns" "none"
       ];
     };
     sandboxes.steam = {
@@ -394,9 +392,11 @@ inside the instance.
 
 Networking uses a separate namespace and pasta. Guest loopback is independent
 of host loopback, and automatic port forwarding is disabled in both directions.
-Use `networkArgs` to publish explicit ports or `network = false` to disable
-network access. See [architecture and configuration](docs/architecture.md) for
-the D-Bus policies, storage model, permissions, and troubleshooting commands.
+`networkArgs` adds options after those safe defaults, so an explicit mapping
+does not re-enable pasta's automatic forwarding for unrelated protocols or
+directions. Use `network = false` to disable network access. See
+[architecture and configuration](docs/architecture.md) for the D-Bus policies,
+storage model, permissions, and troubleshooting commands.
 
 ## Security
 

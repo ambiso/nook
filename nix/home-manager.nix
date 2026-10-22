@@ -61,6 +61,22 @@ let
           "${home}/${cfg.stateDirectory}";
       uid = outer.guest.uid;
       gid = outer.guest.gid;
+      defaultNetworkArgs = [
+        "--no-map-gw"
+        "--dns-forward"
+        "169.254.1.1"
+        # Pasta defaults every forwarding direction to "auto". Always pass
+        # these before the profile's arguments so specifying one mapping does
+        # not accidentally enable automatic forwarding in the other three.
+        "--tcp-ports"
+        "none"
+        "--udp-ports"
+        "none"
+        "--tcp-ns"
+        "none"
+        "--udp-ns"
+        "none"
+      ];
       nixEnabled = cfg.nix || cfg.nixBuildLogs || hm != null;
       hm =
         if cfg.homeManagerModules == [ ] then
@@ -349,7 +365,9 @@ let
         ln -s ${pkgs.writeText "sandbox-host-environment" (lib.concatStringsSep "\n" (lib.unique cfg.hostEnvironment))} "$out/host-environment"
         ln -s ${pkgs.writeText "session-bus-rules" (lib.concatStringsSep "\n" (lib.unique sessionRules))} "$out/session-rules"
         ln -s ${pkgs.writeText "system-bus-rules" (lib.concatStringsSep "\n" (rules cfg.systemBusPolicies))} "$out/system-rules"
-        ln -s ${pkgs.writeText "pasta-options" (lib.concatStringsSep "\n" cfg.networkArgs)} "$out/pasta"
+        ln -s ${
+          pkgs.writeText "pasta-options" (lib.concatStringsSep "\n" (defaultNetworkArgs ++ cfg.networkArgs))
+        } "$out/pasta"
       '';
     in
     {
@@ -433,23 +451,17 @@ let
         };
         networkArgs = lib.mkOption {
           type = types.listOf types.str;
-          default = [
-            "--no-map-gw"
-            "--dns-forward"
-            "169.254.1.1"
-            # Disable both automatic directions. A guest listener must not
-            # become a host listener unless the profile requests that mapping,
-            # and host listeners must not reserve guest loopback ports.
-            "--tcp-ports"
-            "none"
+          default = [ ];
+          example = [
             "--udp-ports"
-            "none"
-            "--tcp-ns"
-            "none"
-            "--udp-ns"
-            "none"
+            "192.0.2.10%eth0/8080"
           ];
-          description = "Arguments for pasta. Automatic host/guest port forwarding is disabled by default; add explicit mappings when needed.";
+          description = ''
+            Additional arguments for pasta, applied after Nook disables
+            automatic forwarding in both directions. Later pasta port options
+            replace the corresponding `none` default, so a profile can publish
+            an explicit mapping without enabling unrelated forwarding.
+          '';
         };
         extraSystemCalls = lib.mkOption {
           type = types.listOf (types.strMatching "[@A-Za-z0-9_-]+");
