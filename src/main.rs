@@ -4,13 +4,15 @@ mod completion;
 mod portal;
 mod tui;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use colored_json::{Color, ColorMode, Paint, Style};
 use nook::{
     config::{
         self, Profile, Result, catalog, valid_forwarded_environment_assignment, valid_instance,
     },
     storage,
 };
+use serde::Serialize;
 use std::{
     collections::BTreeSet,
     env, fs,
@@ -39,7 +41,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Action {
     /// List configured profiles and running instances
-    List,
+    List(List),
+    /// Print an instance's persistent host home directory
+    Path(Instance),
     /// Launch an instance if necessary, then run a command or shell
     #[command(visible_aliases = ["l", "start", "s"])]
     Launch(Launch),
@@ -51,6 +55,20 @@ enum Action {
     Stop(Stop),
     /// Permanently delete a stopped, named instance and its saved home
     Delete(Delete),
+}
+
+#[derive(Args)]
+struct List {
+    /// Output representation
+    #[arg(long, value_enum, default_value_t)]
+    format: ListFormat,
+}
+
+#[derive(Clone, Copy, Default, ValueEnum)]
+enum ListFormat {
+    #[default]
+    Text,
+    Json,
 }
 
 #[derive(Args)]
@@ -397,6 +415,126 @@ struct Choice {
     running: bool,
 }
 
+#[derive(Serialize)]
+struct ListedInstance<'a> {
+    profile: &'a str,
+    instance: &'a str,
+    running: bool,
+}
+
+fn write_choices(
+    entries: &[ListedInstance<'_>],
+    format: ListFormat,
+    terminal: bool,
+    color: bool,
+    output: &mut impl Write,
+) -> Result<()> {
+    let paint = |text: String, style: Style| {
+        if color {
+            text.paint(style).to_string()
+        } else {
+            text
+        }
+    };
+    match format {
+        ListFormat::Text if terminal => {
+            let profile_width = entries
+                .iter()
+                .map(|entry| entry.profile.len())
+                .max()
+                .unwrap_or(0)
+                .max("PROFILE".len());
+            let instance_width = entries
+                .iter()
+                .map(|entry| entry.instance.len())
+                .max()
+                .unwrap_or(0)
+                .max("INSTANCE".len());
+            writeln!(
+                output,
+                "{}  {}  {}",
+                paint(
+                    format!("{:<profile_width$}", "PROFILE"),
+                    Style::new().bold()
+                ),
+                paint(
+                    format!("{:<instance_width$}", "INSTANCE"),
+                    Style::new().bold()
+                ),
+                paint("STATE".into(), Style::new().bold()),
+            )?;
+            for entry in entries {
+                let (state, state_style) = if entry.running {
+                    ("● running", Color::Green.foreground())
+                } else {
+                    ("○ stopped", Style::new().dim())
+                };
+                writeln!(
+                    output,
+                    "{}  {:<instance_width$}  {}",
+                    paint(
+                        format!("{:<profile_width$}", entry.profile),
+                        Color::Cyan.foreground()
+                    ),
+                    entry.instance,
+                    paint(state.into(), state_style),
+                )?;
+            }
+        }
+        ListFormat::Text => {
+            for entry in entries {
+                writeln!(
+                    output,
+                    "{}\t{}\t{}",
+                    entry.profile,
+                    entry.instance,
+                    if entry.running { "running" } else { "stopped" }
+                )?;
+            }
+        }
+        ListFormat::Json => {
+            if terminal {
+                colored_json::write_colored_json_with_mode(
+                    &entries,
+                    &mut *output,
+                    if color { ColorMode::On } else { ColorMode::Off },
+                )?;
+            } else {
+                serde_json::to_writer(&mut *output, entries)?;
+            }
+            writeln!(output)?;
+        }
+    }
+    Ok(())
+}
+
+fn print_choices(profiles: &[Profile], choices: &[Choice], format: ListFormat) -> Result<()> {
+    let entries = choices
+        .iter()
+        .map(|choice| {
+            Ok(ListedInstance {
+                profile: profiles[choice.profile].get("name")?,
+                instance: &choice.instance,
+                running: choice.running,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let terminal = io::stdout().is_terminal();
+    let color = terminal && ColorMode::default().use_color();
+    write_choices(&entries, format, terminal, color, &mut io::stdout().lock())
+}
+
+fn print_instance_path(profile: &Profile, instance: &str) -> Result<()> {
+    let path = profile.persistent_home(instance)?.ok_or_else(|| {
+        format!(
+            "{}/{} has no persistent host path; ephemeral homes exist only while running",
+            profile.values["name"], instance
+        )
+    })?;
+    println!("{}", path.display());
+    Ok(())
+}
+
 fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
     let output = Command::new("systemctl")
         .args([
@@ -515,15 +653,13 @@ fn run() -> Result<i32> {
         };
     };
     match action {
-        Action::List => {
-            for choice in choices(&profiles)? {
-                println!(
-                    "{}\t{}\t{}",
-                    profiles[choice.profile].get("name")?,
-                    choice.instance,
-                    if choice.running { "running" } else { "stopped" }
-                );
-            }
+        Action::List(request) => {
+            print_choices(&profiles, &choices(&profiles)?, request.format)?;
+            Ok(0)
+        }
+        Action::Path(request) => {
+            let profile = find_profile(&profiles, &request.profile)?;
+            print_instance_path(profile, &request.id())?;
             Ok(0)
         }
         Action::Stop(request) => {
@@ -644,6 +780,66 @@ mod tests {
             panic!("expected stop command");
         };
         assert_eq!(request.id(), "n-my-project");
+
+        let cli = Cli::try_parse_from(["nk", "path", "--instance", "n-my-project", "dev"]).unwrap();
+        let Some(Action::Path(request)) = cli.command else {
+            panic!("expected path command");
+        };
+        assert_eq!(request.profile, "dev");
+        assert_eq!(request.id(), "n-my-project");
+    }
+
+    #[test]
+    fn list_accepts_json_format() {
+        let cli = Cli::try_parse_from(["nk", "list", "--format=json"]).unwrap();
+        let Some(Action::List(request)) = cli.command else {
+            panic!("expected list command");
+        };
+        assert!(matches!(request.format, ListFormat::Json));
+    }
+
+    #[test]
+    fn list_output_adapts_to_terminals_and_pipes() {
+        let entries = [
+            ListedInstance {
+                profile: "dev",
+                instance: "main",
+                running: true,
+            },
+            ListedInstance {
+                profile: "dev",
+                instance: "n-example",
+                running: false,
+            },
+        ];
+
+        let mut output = Vec::new();
+        write_choices(&entries, ListFormat::Text, false, false, &mut output).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "dev\tmain\trunning\ndev\tn-example\tstopped\n"
+        );
+
+        let mut output = Vec::new();
+        write_choices(&entries, ListFormat::Text, true, true, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("PROFILE"));
+        assert!(output.contains("● running"));
+        assert!(output.contains("\u{1b}["));
+
+        let mut output = Vec::new();
+        write_choices(&entries, ListFormat::Json, false, false, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.trim_end().contains('\n'));
+        assert!(!output.contains("\u{1b}["));
+        let decoded: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(decoded[1]["instance"], "n-example");
+
+        let mut output = Vec::new();
+        write_choices(&entries, ListFormat::Json, true, false, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\n  {"));
+        assert!(!output.contains("\u{1b}["));
     }
 
     #[test]

@@ -286,11 +286,18 @@ nk launch dev -- git --version         # run a command
 nk launch dev --join -- git status    # require an already running instance
 nk gui zotero                         # launch the configured GUI application
 nk list
+nk list --format=json                 # machine-readable instance inventory
+nk path dev --instance n-my-project   # print an instance's host home path
 nk stop dev --name my-project
 nk stop dev --all                         # stop every running instance of dev
 nk stop --all                             # stop every running sandbox
 nk delete dev --name my-project        # confirm permanent removal of saved data
 ```
+
+`nk list` shows an aligned, colored table on a terminal and retains its
+tab-separated output when redirected. JSON is pretty-printed and colored on a
+terminal, while redirected `--format=json` output is compact JSON without ANSI
+escapes. Set `NO_COLOR` to disable color without disabling terminal formatting.
 
 If Home Manager refuses to replace an existing file, Nook keeps the sandbox
 running and prints a recovery warning before entering it. Inside the sandbox,

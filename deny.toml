@@ -12,3 +12,10 @@ allow = [
     "Unicode-3.0",
     "Zlib", # foldhash, used by ratatui's data structures
 ]
+
+# The EUPL steward explicitly lists EPL-2.0 as compatible and treats linked
+# dependencies as independent works. Keep this exception limited to the JSON
+# formatter rather than accepting every future EPL-2.0 dependency implicitly.
+exceptions = [
+    { crate = "colored_json", allow = ["EPL-2.0"] },
+]

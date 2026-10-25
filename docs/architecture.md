@@ -271,6 +271,8 @@ Guests use the host timezone through nspawn's automatic setup.
 
 ```sh
 nk list
+nk list --format=json
+nk path dev --instance n-project
 systemctl status sandbox-uambiso-dev@main.service
 journalctl -u sandbox-uambiso-dev@main.service
 machinectl list

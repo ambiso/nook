@@ -53,7 +53,7 @@ fn command(preceding: &[OsString], default_catalog: PathBuf) -> clap::Command {
     command = command
         .mut_subcommands(|sub| sub.visible_alias(None).visible_aliases(Vec::<&str>::new()))
         .mut_subcommand("launch", |sub| sub.aliases(["l", "start", "s"]));
-    for action in ["launch", "gui", "shell", "stop", "delete"] {
+    for action in ["launch", "gui", "shell", "stop", "delete", "path"] {
         command = command.mut_subcommand(action, |sub| {
             // Preserve argument order: mut_arg removes and re-appends positionals.
             sub.mut_args(|arg| {
