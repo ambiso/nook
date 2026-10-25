@@ -44,10 +44,10 @@ with subtest("automatic host UID/GID allocation and independent guest IDs"):
     )
     machine.succeed(command)
     machine.succeed(
-        f"test $(stat -c %u /home/bob/.sandbox/dev/home/owner-check) = {host_uid}"
+        f"test $(stat -c %u /home/bob/.sandbox/dev/instances/main/home/owner-check) = {host_uid}"
     )
     machine.succeed(
-        f"test $(stat -c %g /home/bob/.sandbox/dev/home/owner-check) = {host_gid}"
+        f"test $(stat -c %g /home/bob/.sandbox/dev/instances/main/home/owner-check) = {host_gid}"
     )
     for key, value in {
         "gtk-theme": "Adwaita-dark",
@@ -65,11 +65,15 @@ with subtest("automatic host UID/GID allocation and independent guest IDs"):
 
 
 try:
-    shared_storage = "/home/alice/.sandbox/check/home/SharedStorage"
+    legacy_shared_storage = "/home/alice/.sandbox/check/home/SharedStorage"
     assert (
-        machine.succeed(f"findmnt -n -o FSTYPE -T {shared_storage}").strip() == "tmpfs"
+        machine.succeed(f"findmnt -n -o FSTYPE -T {legacy_shared_storage}").strip()
+        == "tmpfs"
     )
-    machine.succeed(as_owner(f"echo mounted-storage > {shared_storage}/host-marker"))
+    machine.succeed(
+        as_owner(f"echo mounted-storage > {legacy_shared_storage}/host-marker")
+    )
+    machine.succeed(as_owner("mkdir -p ~/managed-host; echo host-home > ~/managed-host/marker"))
     machine.succeed("test ! -e /home/alice/.sandbox/check/home/Inbox")
     # bwrap left mountpoint placeholders in the backing home. Migration must
     # back them up, preserving edited files and directory contents as well.
@@ -91,7 +95,49 @@ try:
         'wait "$first"; wait "$second"'
     )
     machine.succeed("cmp /tmp/ns-a /tmp/ns-b")
+    shared_storage = "/home/alice/.sandbox/check/instances/main/home/SharedStorage"
+    machine.succeed(
+        "test ! -e /home/alice/.sandbox/check/home; "
+        "test -d /home/alice/.sandbox/check/instances/main/home; "
+        f"test $(findmnt -n -o FSTYPE -T {shared_storage}) = tmpfs"
+    )
     inside("true", "--join")
+    inside("""
+        grep -Fx host-home ~/ManagedHost/marker
+        echo shared-volume > /volumes/profile/marker
+        echo main-volume > /volumes/instance/marker
+        test "$(ulimit -c)" = 0
+        test "$(ulimit -l)" = 65536
+    """)
+    # Exercise the kernel limit too: 16 MiB exceeds systemd's common 8 MiB
+    # default, but must be lockable under this profile's configured 64 MiB.
+    inside(f"""
+        {DESKTOP_PYTHON} - <<'PY'
+        import ctypes
+        import mmap
+
+        size = 16 * 1024 * 1024
+        memory = mmap.mmap(-1, size)
+        address = ctypes.addressof(ctypes.c_char.from_buffer(memory))
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.mlock.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        libc.mlock.restype = ctypes.c_int
+        if libc.mlock(address, size) != 0:
+            raise OSError(ctypes.get_errno(), "mlock failed")
+        PY
+    """)
+    assert (
+        machine.succeed(
+            "systemctl show sandbox-ualice-check@main.service -p LimitCORE --value"
+        ).strip()
+        == "0"
+    )
+    assert (
+        machine.succeed(
+            "systemctl show sandbox-ualice-check@main.service -p LimitMEMLOCK --value"
+        ).strip()
+        == "67108864"
+    )
     assert inside("uname -n").strip() == "check-main"
     inside("getent hosts check-main")
     # Transient services receive concrete NixOS cursor search paths, including
@@ -110,12 +156,14 @@ try:
     assert inside("dconf read /org/gnome/desktop/interface/cursor-size").strip() == "32"
     # The compatibility wrapper maps the backing home even when the shell's
     # logical current directory reaches it through a host symlink.
-    project_directory = "/home/alice/.sandbox/check/home/Projects/project's %h/subdir"
+    project_directory = (
+        "/home/alice/.sandbox/check/instances/main/home/Projects/project's %h/subdir"
+    )
     machine.succeed(
         as_owner(
             "mkdir -p "
             + shlex.quote(project_directory)
-            + "; ln -s ~/.sandbox/check/home/Projects ~/Projects"
+            + "; ln -s ~/.sandbox/check/instances/main/home/Projects ~/Projects"
         )
     )
     for directory in [
@@ -194,7 +242,7 @@ try:
     cli("stop cache-old")
     cli("launch cache-old -- true")
     cli("stop cache-old")
-    cache_home = "/home/alice/.sandbox/cache-test/home"
+    cache_home = "/home/alice/.sandbox/cache-test/instances/main/home"
     assert machine.succeed(f"cat {cache_home}/activation-history").splitlines() == [
         "cache-old"
     ]
@@ -215,7 +263,7 @@ try:
     ]
     inside("grep -Fx nested-bind-works ~/Inbox/child/shared.txt")
     machine.succeed(
-        "test $(stat -c %u /home/alice/.sandbox/check/home/Inbox) = 1000; "
+        "test $(stat -c %u /home/alice/.sandbox/check/instances/main/home/Inbox) = 1000; "
         "test $(stat -c %u /home/alice/inbox-source/child) = 1000; "
         "test $(stat -c %u /home/alice/inbox-source/child/shared.txt) = 1000"
     )
@@ -290,8 +338,9 @@ try:
         )
     )
     inside(
-        "fc-match 'sans-serif:lang=ja:charset=65e5' | grep 'Noto Sans CJK JP'; grep -F 'search sandbox.test' /etc/resolv.conf; getent ahostsv4 search-check | grep -F 192.0.2.73; test $(date +%Z) = CEST; command -v xdg-open rg ps which strace"
+        "fc-match 'sans-serif:lang=ja:charset=65e5' | grep 'Noto Sans CJK JP'; grep -F 'search sandbox.test' /etc/resolv.conf; getent ahostsv4 search-check | grep -F 192.0.2.73; command -v xdg-open rg ps which strace"
     )
+    assert inside("date +%Z").strip() == machine.succeed("date +%Z").strip()
     machine.succeed("mknod -m666 /dev/sandbox-hotplug-test c 1 3")
     machine.wait_until_succeeds(
         launcher("launch check -- bash -ec 'echo hotplug >/dev/sandbox-hotplug-test'")
@@ -608,6 +657,10 @@ for desktop_id, query in [
     inside(
         """
         test ! -e ~/persistent
+        grep -Fx host-home ~/ManagedHost/marker
+        grep -Fx shared-volume /volumes/profile/marker
+        test ! -e /volumes/instance/marker
+        echo named-volume > /volumes/instance/marker
         test ! -e ~/build/main-output
         test ! -e ~/.cache/sccache/main-cache
         mkdir -p ~/build ~/.cache/sccache
@@ -627,6 +680,8 @@ for desktop_id, query in [
     inside(
         """
         test -e ~/named
+        grep -Fx named-volume /volumes/instance/marker
+        grep -Fx shared-volume /volumes/profile/marker
         test ! -e ~/persistent
         test -e ~/build/named-output
         test -e ~/.cache/sccache/named-cache
@@ -636,11 +691,15 @@ for desktop_id, query in [
         "--instance n-review",
     )
     cli("stop check --instance n-review")
+    inside("grep -Fx main-volume /volumes/instance/marker")
     inside(
         "test ! -e ~/persistent; test -e /shared/marker; "
         "test ! -e ~/build/main-output; test ! -e ~/build/named-output; "
         "test ! -e ~/.cache/sccache/main-cache; test ! -e ~/.cache/sccache/named-cache; "
         "mkdir -p ~/build ~/.cache/sccache; "
+        "test ! -e /volumes/instance/marker; "
+        "echo ephemeral-volume > /volumes/instance/marker; "
+        "grep -Fx shared-volume /volumes/profile/marker; "
         "touch ~/temporary ~/build/temporary-output ~/.cache/sccache/temporary-cache; test ! -e "
         + shlex.quote(selected_document),
         "--ephemeral",
@@ -659,6 +718,8 @@ for desktop_id, query in [
     inside(
         """
         test ! -e ~/temporary
+        test ! -e /volumes/instance/marker
+        grep -Fx shared-volume /volumes/profile/marker
         test ! -e ~/persistent
         test ! -e ~/build/temporary-output
         test ! -e ~/.cache/sccache/temporary-cache
@@ -671,9 +732,13 @@ for desktop_id, query in [
     # boot must reactivate the same persistent home and retain its UID mapping.
     sleeper = launcher("launch check -- bash -c 'touch ~/joiner-ready; exec sleep 300'")
     machine.execute(f"{sleeper} >/tmp/joiner-log 2>&1 & echo $! >/tmp/joiner-pid")
-    machine.wait_until_succeeds("test -e /home/alice/.sandbox/check/home/joiner-ready")
+    machine.wait_until_succeeds(
+        "test -e /home/alice/.sandbox/check/instances/main/home/joiner-ready"
+    )
     cli("stop check")
-    machine.succeed("test ! -e /home/alice/.sandbox/check/home/pgdata/postmaster.pid")
+    machine.succeed(
+        "test ! -e /home/alice/.sandbox/check/instances/main/home/pgdata/postmaster.pid"
+    )
     inside("""
         test -e ~/persistent
         test ! -L ~/.ssh/config

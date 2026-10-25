@@ -24,6 +24,34 @@ let
     "TERM"
     "COLORTERM"
   ];
+  resourceLimitNames = [
+    "CPU"
+    "FSIZE"
+    "DATA"
+    "STACK"
+    "CORE"
+    "RSS"
+    "NOFILE"
+    "AS"
+    "NPROC"
+    "MEMLOCK"
+    "LOCKS"
+    "SIGPENDING"
+    "MSGQUEUE"
+    "NICE"
+    "RTPRIO"
+    "RTTIME"
+  ];
+  resourceLimitsType = types.submodule {
+    options = lib.genAttrs resourceLimitNames (
+      name:
+      lib.mkOption {
+        type = types.nullOr (types.either types.int types.str);
+        default = null;
+        description = "Value for systemd's Limit${name} and DefaultLimit${name} settings.";
+      }
+    );
+  };
   mountType = types.submodule {
     options = {
       source = lib.mkOption {
@@ -31,6 +59,63 @@ let
         description = "Absolute host path; @host-runtime@/ expands to the owner's runtime directory at launch.";
       };
       target = lib.mkOption { type = types.str; };
+      readOnly = lib.mkOption {
+        type = types.bool;
+        default = false;
+      };
+    };
+  };
+  managedMountSourceType = types.submodule {
+    options = {
+      scope = lib.mkOption {
+        type = types.enum [
+          "host"
+          "hostHome"
+          "profile"
+          "instance"
+        ];
+        default = "instance";
+        description = ''
+          Namespace used to resolve the source at launch. Profile volumes are
+          deliberately shared by every instance; instance volumes follow the
+          selected instance's persistence lifetime.
+        '';
+      };
+      path = lib.mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Absolute path for host sources or a path relative to the host home
+          for hostHome sources. Managed profile and instance volumes use the
+          mount attribute name and do not accept a path.
+        '';
+      };
+    };
+  };
+  managedMountTargetType = types.submodule {
+    options = {
+      scope = lib.mkOption {
+        type = types.enum [ "sandboxHome" ];
+        default = "sandboxHome";
+      };
+      path = lib.mkOption {
+        type = types.str;
+        description = "Path below the sandbox user's home.";
+      };
+    };
+  };
+  managedMountType = types.submodule {
+    options = {
+      source = lib.mkOption {
+        type = managedMountSourceType;
+        default = { };
+      };
+      target = lib.mkOption {
+        type = types.oneOf [
+          types.str
+          managedMountTargetType
+        ];
+      };
       readOnly = lib.mkOption {
         type = types.bool;
         default = false;
@@ -59,6 +144,59 @@ let
           cfg.stateDirectory
         else
           "${home}/${cfg.stateDirectory}";
+      resourceLimits = lib.filterAttrs (_: value: value != null) cfg.resourceLimits;
+      validRelativePath =
+        path:
+        path != ""
+        && !(lib.hasPrefix "/" path)
+        && !(lib.hasInfix "\\" path)
+        && !(lib.hasInfix ":" path)
+        && lib.all (component: component != "" && component != "." && component != "..") (
+          lib.splitString "/" path
+        );
+      typedMounts = lib.mapAttrsToList (
+        volumeName: mount:
+        let
+          scope = mount.source.scope;
+          suppliedPath = mount.source.path;
+          source =
+            if scope == "host" then
+              if suppliedPath != null && lib.hasPrefix "/" suppliedPath then
+                suppliedPath
+              else
+                throw "programs.nook.sandboxes.${name}.mounts.${volumeName}: host sources require an absolute path"
+            else if scope == "hostHome" then
+              if suppliedPath != null && validRelativePath suppliedPath then
+                suppliedPath
+              else
+                throw "programs.nook.sandboxes.${name}.mounts.${volumeName}: hostHome sources require a safe relative path"
+            else if suppliedPath != null then
+              throw "programs.nook.sandboxes.${name}.mounts.${volumeName}: ${scope} volumes use their attribute name and do not accept source.path"
+            else if builtins.match "[a-z0-9][a-z0-9-]{0,63}" volumeName == null then
+              throw "programs.nook.sandboxes.${name}.mounts.${volumeName}: managed volume names must be at most 64 lowercase letters, digits, or hyphens"
+            else
+              "volumes/${volumeName}";
+          target =
+            if builtins.isString mount.target then
+              mount.target
+            else if validRelativePath mount.target.path then
+              "${home}/${mount.target.path}"
+            else
+              throw "programs.nook.sandboxes.${name}.mounts.${volumeName}: sandboxHome targets require a safe relative path";
+        in
+        {
+          inherit source target;
+          sourceScope =
+            {
+              host = "host";
+              hostHome = "host-home";
+              profile = "profile";
+              instance = "instance";
+            }
+            .${scope};
+          inherit (mount) readOnly;
+        }
+      ) cfg.mounts;
       uid = outer.guest.uid;
       gid = outer.guest.gid;
       defaultNetworkArgs = [
@@ -262,6 +400,7 @@ let
               dnsSearch
               devicePatterns
               ;
+            inherit resourceLimits;
             inherit launcher;
           };
           modules = [ ./container.nix ] ++ cfg.nixosModules;
@@ -287,34 +426,46 @@ let
             k: v: "${k}\t${toString (builtins.stringLength (toString v))}\t${toString v}\n"
           ) attrs
         );
-      mounts =
-        cfg.bindMounts
-        ++ lib.optionals cfg.nixBuildLogs [
-          {
-            source = "/nix/var/log/nix";
-            target = "/nix/var/log/nix";
-            readOnly = true;
-          }
-          {
-            source = "/nix/var/nix/db";
-            target = "/nix/var/nix/db";
-            readOnly = true;
-          }
-        ]
-        ++ lib.optionals cfg.gpu [
-          {
-            source = "${pkgs.mesa}";
-            target = "/run/opengl-driver";
-            readOnly = true;
-          }
-        ]
-        ++ lib.optionals (cfg.gpu && pkgs.stdenv.hostPlatform.system == "x86_64-linux") [
-          {
-            source = "${pkgs.pkgsi686Linux.mesa}";
-            target = "/run/opengl-driver-32";
-            readOnly = true;
-          }
-        ];
+      mounts = [
+        {
+          source = "home";
+          sourceScope = "instance";
+          target = home;
+          readOnly = false;
+        }
+      ]
+      ++ (map (mount: mount // { sourceScope = "host"; }) cfg.bindMounts)
+      ++ typedMounts
+      ++ lib.optionals cfg.nixBuildLogs [
+        {
+          source = "/nix/var/log/nix";
+          sourceScope = "host";
+          target = "/nix/var/log/nix";
+          readOnly = true;
+        }
+        {
+          source = "/nix/var/nix/db";
+          sourceScope = "host";
+          target = "/nix/var/nix/db";
+          readOnly = true;
+        }
+      ]
+      ++ lib.optionals cfg.gpu [
+        {
+          source = "${pkgs.mesa}";
+          sourceScope = "host";
+          target = "/run/opengl-driver";
+          readOnly = true;
+        }
+      ]
+      ++ lib.optionals (cfg.gpu && pkgs.stdenv.hostPlatform.system == "x86_64-linux") [
+        {
+          source = "${pkgs.pkgsi686Linux.mesa}";
+          sourceScope = "host";
+          target = "/run/opengl-driver-32";
+          readOnly = true;
+        }
+      ];
       manifest = pkgs.writeText "sandbox-profile-${name}" (textPairs {
         inherit
           name
@@ -324,7 +475,7 @@ let
           gid
           ;
         identityVersion = 2;
-        supervisorContract = 1;
+        supervisorContract = 2;
         supervisorExecutable = "${launcher}/bin/.nook-root-wrapped";
         shell = "${appPackage}/bin/${shell}";
         gui =
@@ -344,10 +495,16 @@ let
         portals = if cfg.portals then 1 else 0;
         inheritAppearance = if cfg.inheritAppearance then 1 else 0;
         extraSystemCalls = lib.concatStringsSep " " cfg.extraSystemCalls;
+        resourceLimits = lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (limit: value: "${limit}=${toString value}") resourceLimits
+        );
         portalAppId = "eu.ambiso.sandbox.profile_${lib.replaceStrings [ "-" ] [ "_" ] name}";
       });
       mountFile = pkgs.writeText "sandbox-mounts-${name}" (
-        lib.concatMapStrings (m: "${if m.readOnly then "ro" else "rw"}\t${m.source}\t${m.target}\n") mounts
+        "nook-mounts-v2\n"
+        + lib.concatMapStrings (
+          m: "${if m.readOnly then "ro" else "rw"}\t${m.sourceScope}\t${m.source}\t${m.target}\n"
+        ) mounts
         + lib.concatMapStrings (path: "device\t${path}\t${path}\n") (
           lib.unique (lib.optionals cfg.gpu [ "/dev/dri" ] ++ cfg.devices)
         )
@@ -469,6 +626,20 @@ let
           example = [ "perf_event_open" ];
           description = "System calls or systemd syscall groups to add to systemd-nspawn's default allowlist.";
         };
+        resourceLimits = lib.mkOption {
+          type = resourceLimitsType;
+          default = { };
+          example = {
+            MEMLOCK = "1G";
+            NOFILE = 1048576;
+          };
+          description = ''
+            POSIX resource limits inherited by sandbox commands and services.
+            Each non-null value configures both the host supervisor's Limit*
+            setting and the corresponding guest systemd DefaultLimit* setting.
+            Values use systemd syntax, including "infinity" and soft:hard pairs.
+          '';
+        };
         dnsSearch = lib.mkOption {
           type = types.listOf types.str;
           default = [ ];
@@ -520,6 +691,28 @@ let
         bindMounts = lib.mkOption {
           type = types.listOf mountType;
           default = [ ];
+          description = "Low-level absolute host bind mounts. Prefer mounts for managed and home-relative storage.";
+        };
+        mounts = lib.mkOption {
+          type = types.attrsOf managedMountType;
+          default = { };
+          example = lib.literalExpression ''
+            {
+              projects = {
+                source = { scope = "hostHome"; path = "Projects"; };
+                target = { scope = "sandboxHome"; path = "Projects"; };
+              };
+              build-store = {
+                source.scope = "instance";
+                target = "/build-store";
+              };
+            }
+          '';
+          description = ''
+            Typed host and managed-volume mounts. Instance volumes are private
+            to the selected main, named, or ephemeral instance. Profile
+            volumes are explicitly shared by every instance of this sandbox.
+          '';
         };
         environment = lib.mkOption {
           type = types.attrsOf types.str;
@@ -749,12 +942,6 @@ in
           source = "${wrapper}/share/applications/${desktopFileFor name c}";
         }
       ) (lib.filterAttrs (_: c: c.guiEntryPoint != null) cfg);
-      home.file = lib.concatMapAttrs (
-        _: c:
-        lib.optionalAttrs (!(lib.hasPrefix "/" c.stateDirectory)) {
-          "${c.stateDirectory}/home/.placeholder".text = "# persistent sandbox home\n";
-        }
-      ) cfg;
     })
   ];
 }

@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fmt, fs, io,
     path::{Path, PathBuf},
 };
 
@@ -38,8 +38,38 @@ pub struct Profile {
 #[derive(Clone, Debug)]
 pub struct Mount {
     pub mode: String,
-    pub source: String,
+    pub source: MountSource,
     pub target: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MountSource {
+    Path(String),
+    HostHome(String),
+    ProfilePath(String),
+    InstancePath(String),
+}
+
+impl fmt::Display for MountSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(path) => write!(formatter, "host:{path}"),
+            Self::HostHome(path) => write!(formatter, "host-home:{path}"),
+            Self::ProfilePath(path) => write!(formatter, "profile:{path}"),
+            Self::InstancePath(path) => write!(formatter, "instance:{path}"),
+        }
+    }
+}
+
+impl MountSource {
+    pub fn path(&self) -> Result<&str> {
+        match self {
+            Self::Path(path) => Ok(path),
+            Self::HostHome(_) | Self::ProfilePath(_) | Self::InstancePath(_) => {
+                Err("managed mount source was not resolved for an instance".into())
+            }
+        }
+    }
 }
 
 pub fn valid_name(s: &str) -> bool {
@@ -47,6 +77,23 @@ pub fn valid_name(s: &str) -> bool {
         && s.len() <= 24
         && s.bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+pub fn valid_volume_name(s: &str) -> bool {
+    s.bytes()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && s.len() <= 64
+        && s.bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+pub fn valid_relative_mount_syntax(path: &str) -> bool {
+    let parsed = Path::new(path);
+    !path.is_empty()
+        && !parsed.is_absolute()
+        && !path.contains(['\0', '\n', '\r', '\t', ':', '\\'])
+        && path
+            .split('/')
+            .all(|component| !matches!(component, "" | "." | ".."))
 }
 pub fn valid_instance(s: &str) -> bool {
     s == "main"
@@ -60,8 +107,10 @@ pub fn valid_instance(s: &str) -> bool {
 pub fn safe_mount(source: &str, target: &str) -> Result<()> {
     for path in [source, target] {
         let p = Path::new(path);
+        let normalized: PathBuf = p.components().collect();
         if !p.is_absolute()
             || path.contains(['\0', '\n', '\r', '\t', ':', '\\'])
+            || normalized.as_os_str() != p.as_os_str()
             || p.components()
                 .any(|x| matches!(x, std::path::Component::ParentDir))
         {
@@ -161,6 +210,10 @@ fn resolve_owner(values: &mut BTreeMap<String, String>) -> Result<()> {
         // caller. Resolve the configured account through the host account DB.
         values.insert("hostUid".into(), account.uid.to_string());
         values.insert("hostGid".into(), account.gid.to_string());
+        values.insert(
+            "hostHome".into(),
+            account.dir.to_string_lossy().into_owned(),
+        );
     } else if values.contains_key("identityVersion") {
         return Err("unsupported profile identity version".into());
     } else if values.contains_key("hostUid") || values.contains_key("hostGid") {
@@ -296,12 +349,10 @@ impl Profile {
         }
         let state = PathBuf::from(self.get("state")?);
         // A named instance explicitly requests persistence, even when the
-        // template's main instance normally has a temporary home.
-        Ok(Some(if instance == "main" {
-            state.join("home")
-        } else {
-            state.join("instances").join(instance).join("home")
-        }))
+        // template's main instance normally has a temporary home. Main still
+        // uses the same directory layout and lifecycle model as every other
+        // persistent instance.
+        Ok(Some(state.join("instances").join(instance).join("home")))
     }
 
     pub fn saved_instances(&self) -> Result<Vec<String>> {
@@ -332,24 +383,69 @@ impl Profile {
         let mut values = pairs(&dir.join("profile"))?;
         resolve_owner(&mut values)?;
         let mut mounts = Vec::new();
-        for line in lines(&dir.join("mounts"))? {
+        let mut mount_lines = lines(&dir.join("mounts"))?;
+        let versioned = mount_lines
+            .first()
+            .is_some_and(|line| line == "nook-mounts-v2");
+        if versioned {
+            mount_lines.remove(0);
+        }
+        for line in mount_lines {
             let fields: Vec<_> = line.split('\t').collect();
-            if fields.len() != 3 || !["ro", "rw", "device", "device-pattern"].contains(&fields[0]) {
+            if !["ro", "rw", "device", "device-pattern"].contains(&fields[0]) {
                 return Err("invalid mount record".into());
             }
-            let source = fields[1].replace(
-                "@host-runtime@",
-                &format!(
-                    "/run/user/{}",
-                    values
-                        .get("hostUid")
-                        .or_else(|| values.get("uid"))
-                        .ok_or("missing host UID")?
-                ),
-            );
-            safe_mount(&source, fields[2])?;
+            let (source, target) = if versioned && matches!(fields[0], "ro" | "rw") {
+                if fields.len() != 4 {
+                    return Err("invalid versioned mount record".into());
+                }
+                let source = match fields[1] {
+                    "host" => MountSource::Path(fields[2].replace(
+                        "@host-runtime@",
+                        &format!(
+                            "/run/user/{}",
+                            values.get("hostUid").ok_or("missing host UID")?
+                        ),
+                    )),
+                    "host-home" if valid_relative_mount_syntax(fields[2]) => {
+                        MountSource::HostHome(fields[2].into())
+                    }
+                    "profile" if valid_relative_mount_syntax(fields[2]) => {
+                        MountSource::ProfilePath(fields[2].into())
+                    }
+                    "instance" if valid_relative_mount_syntax(fields[2]) => {
+                        MountSource::InstancePath(fields[2].into())
+                    }
+                    _ => return Err("invalid mount source scope or path".into()),
+                };
+                (source, fields[3])
+            } else {
+                if fields.len() != 3 {
+                    return Err("invalid legacy or device mount record".into());
+                }
+                let source = fields[1].replace(
+                    "@host-runtime@",
+                    &format!(
+                        "/run/user/{}",
+                        values
+                            .get("hostUid")
+                            .or_else(|| values.get("uid"))
+                            .ok_or("missing host UID")?
+                    ),
+                );
+                (MountSource::Path(source), fields[2])
+            };
+            match &source {
+                MountSource::Path(source) => safe_mount(source, target)?,
+                MountSource::HostHome(_)
+                | MountSource::ProfilePath(_)
+                | MountSource::InstancePath(_) => {
+                    safe_mount("/managed-volume", target)?;
+                }
+            }
             if fields[0] == "device-pattern" {
-                let name = fields[1]
+                let source = source.path()?;
+                let name = source
                     .strip_prefix("/dev/")
                     .ok_or("device patterns must be under /dev")?;
                 if name.contains('/') || name == "*" || name.is_empty() {
@@ -357,12 +453,12 @@ impl Profile {
                         "device patterns must select named top-level character devices".into(),
                     );
                 }
-                glob::Pattern::new(fields[1])?;
+                glob::Pattern::new(source)?;
             }
             mounts.push(Mount {
                 mode: fields[0].into(),
                 source,
-                target: fields[2].into(),
+                target: target.into(),
             });
         }
         let p = Self {
@@ -699,10 +795,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let state = directory.path().join("dev");
         let profile = profile(&state, true);
-        let project = state.join("home/Projects/project's %h/subdir");
+        let project = state.join("instances/main/home/Projects/project's %h/subdir");
         fs::create_dir_all(&project).unwrap();
         let alias = directory.path().join("Projects");
-        std::os::unix::fs::symlink(state.join("home/Projects"), &alias).unwrap();
+        std::os::unix::fs::symlink(state.join("instances/main/home/Projects"), &alias).unwrap();
         for path in [project, alias.join("project's %h/subdir")] {
             assert_eq!(
                 profile.guest_working_directory("main", &path).unwrap(),
@@ -711,7 +807,7 @@ mod tests {
         }
         assert_eq!(
             profile
-                .guest_working_directory("main", &state.join("home"))
+                .guest_working_directory("main", &state.join("instances/main/home"))
                 .unwrap(),
             Path::new("/home/test"),
         );
@@ -722,13 +818,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let state = directory.path().join("dev");
         let profile = profile(&state, true);
-        let main_project = state.join("home/Projects/main");
+        let main_project = state.join("instances/main/home/Projects/main");
         let named_project = state.join("instances/n-project/home/Projects/named");
         let outside = state.join("home-other/Projects");
         for path in [&main_project, &named_project, &outside] {
             fs::create_dir_all(path).unwrap();
         }
-        let escape = state.join("home/outside");
+        let escape = state.join("instances/main/home/outside");
         std::os::unix::fs::symlink(&outside, &escape).unwrap();
         for (instance, path) in [
             ("main", &named_project),
@@ -761,7 +857,7 @@ mod tests {
             );
             assert_eq!(
                 profile.persistent_home("main").unwrap(),
-                persistent.then(|| state.join("home")),
+                persistent.then(|| state.join("instances/main/home")),
             );
             assert_eq!(profile.persistent_home("e-0123456789abcdef").unwrap(), None);
             assert!(profile.persistent_home("../escape").is_err());
@@ -844,11 +940,30 @@ mod tests {
             "/home/me/.Xauthority",
             "/dev",
             "/a/../tmp",
+            "/allowed/./nested",
+            "/allowed//nested",
+            "/allowed/",
             "/path:options",
         ] {
             assert!(safe_mount(bad, "/allowed").is_err(), "{bad}");
         }
         assert!(safe_mount("/home/me/Projects", "/home/me/Projects").is_ok());
         assert!(safe_mount("/run/user/1000/wayland-0", "/run/host/wayland-0").is_ok());
+    }
+
+    #[test]
+    fn managed_volume_names_and_relative_paths_are_unambiguous() {
+        for name in ["cache", "build-2", "0"] {
+            assert!(valid_volume_name(name));
+        }
+        for name in ["", "-cache", "Cache", "cache/path", "cache_name"] {
+            assert!(!valid_volume_name(name));
+        }
+        for path in ["Projects", "cache/appimage-nix"] {
+            assert!(valid_relative_mount_syntax(path));
+        }
+        for path in ["", "/absolute", "../escape", "a/../b", "a//b", "a:b"] {
+            assert!(!valid_relative_mount_syntax(path));
+        }
     }
 }

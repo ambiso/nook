@@ -1,4 +1,4 @@
-use crate::config::{Mount, Profile, Result, safe_mount, valid_instance};
+use crate::config::{Mount, MountSource, Profile, Result, safe_mount, valid_instance};
 use std::{
     env,
     ffi::CString,
@@ -32,7 +32,7 @@ use nix::{
 };
 use std::{os::fd::AsFd, sync::Arc};
 
-const SUPERVISOR_CONTRACT: &str = "1";
+const SUPERVISOR_CONTRACT: &str = "2";
 
 fn frontend_executable() -> Result<PathBuf> {
     let current = env::current_exe()?;
@@ -84,6 +84,34 @@ fn pin(profile: &Profile, path: &Path, writable: bool) -> Result<File> {
             .read(true)
             .custom_flags(OFlag::O_PATH.bits())
             .open(path)?;
+        let access = if writable {
+            AccessFlags::R_OK | AccessFlags::W_OK
+        } else {
+            AccessFlags::R_OK
+        };
+        faccessat(
+            &file,
+            "",
+            access,
+            AtFlags::AT_EMPTY_PATH | AtFlags::AT_EACCESS,
+        )?;
+        Ok(file)
+    })
+}
+fn pin_mount_source(profile: &Profile, source: &MountSource, writable: bool) -> Result<File> {
+    as_user(profile, || {
+        let file = match source {
+            MountSource::Path(path) => OpenOptions::new()
+                .read(true)
+                .custom_flags(OFlag::O_PATH.bits())
+                .open(path)?,
+            MountSource::HostHome(path) => {
+                crate::storage::open_beneath(Path::new(profile.get("hostHome")?), Path::new(path))?
+            }
+            MountSource::ProfilePath(_) | MountSource::InstancePath(_) => {
+                return Err("managed mount source was not resolved for an instance".into());
+            }
+        };
         let access = if writable {
             AccessFlags::R_OK | AccessFlags::W_OK
         } else {
@@ -197,6 +225,14 @@ fn supervisor_identity(profile: &Profile) -> Result<String> {
     ] {
         append(&mut supervisor_identity, key, profile.get(key)?);
     }
+    append(
+        &mut supervisor_identity,
+        "resourceLimits",
+        profile
+            .values
+            .get("resourceLimits")
+            .map_or("", String::as_str),
+    );
     Ok(supervisor_identity)
 }
 
@@ -229,7 +265,7 @@ fn restart_required(instance: &str, reason: impl std::fmt::Display) -> Result<i3
 
 #[cfg(test)]
 mod reload_tests {
-    use super::{Profile, reload_restart_reason, supervisor_identity};
+    use super::{MountSource, Profile, reload_restart_reason, supervisor_identity};
     use std::{fs, path::Path};
 
     fn write_profile(root: &Path) -> Profile {
@@ -277,8 +313,8 @@ mod reload_tests {
         let identity = supervisor_identity(&profile).unwrap();
         assert!(
             identity.contains("device-pattern")
-                && identity.contains("device\0/dev/dri\0/dev/dri\0")
-                && identity.contains("rw\0/source\0/target\0")
+                && identity.contains("device\0host:/dev/dri\0/dev/dri\0")
+                && identity.contains("rw\0host:/source\0/target\0")
         );
     }
 
@@ -298,7 +334,7 @@ mod reload_tests {
         }
         for index in 0..profile.mounts.len() {
             let mut changed = profile.clone();
-            changed.mounts[index].source.push_str("-changed");
+            changed.mounts[index].source = MountSource::Path("/changed".into());
             assert_ne!(identity, supervisor_identity(&changed).unwrap());
         }
         let mut first = profile.clone();
@@ -636,9 +672,8 @@ fn stage_mount(
     nspawn_arguments: &mut Vec<String>,
     uid_offset: u32,
 ) -> Result<()> {
-    safe_mount(&bind.source, &bind.target)?;
-    let source = PathBuf::from(&bind.source);
-    let file = pin(profile, &source, bind.mode == "rw")?;
+    safe_mount("/checked-source", &bind.target)?;
+    let file = pin_mount_source(profile, &bind.source, bind.mode == "rw")?;
     let canonical = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
     safe_mount(&canonical.to_string_lossy(), &bind.target)?;
     let directory = file.metadata()?.is_dir();
@@ -759,40 +794,121 @@ fn create_mountpoint_beneath(root: &File, relative: &Path, directory: bool) -> R
 }
 
 fn prepare_nested_mountpoints(profile: &Profile, mounts: &[Mount]) -> Result<()> {
-    as_user(profile, || {
-        for child in mounts
+    for child in mounts
+        .iter()
+        .filter(|mount| matches!(mount.mode.as_str(), "ro" | "rw"))
+    {
+        let target = Path::new(&child.target);
+        // An outer bind hides mountpoints created in the temporary image.
+        // Prepare each nested target in its nearest containing bind source
+        // instead. In particular, a new bind beneath a persistent home
+        // must exist in that home before nspawn overlays it on the image.
+        let parent = mounts
             .iter()
-            .filter(|mount| matches!(mount.mode.as_str(), "ro" | "rw"))
-        {
-            let target = Path::new(&child.target);
-            // An outer bind hides mountpoints created in the temporary image.
-            // Prepare each nested target in its nearest containing bind source
-            // instead. In particular, a new bind beneath a persistent home
-            // must exist in that home before nspawn overlays it on the image.
-            let parent = mounts
-                .iter()
-                .filter(|parent| {
-                    matches!(parent.mode.as_str(), "ro" | "rw")
-                        && target != Path::new(&parent.target)
-                        && target.starts_with(&parent.target)
-                })
-                .max_by_key(|parent| Path::new(&parent.target).components().count());
-            let Some(parent) = parent else { continue };
-            let relative = target.strip_prefix(&parent.target)?;
-            let root = OpenOptions::new()
-                .read(true)
-                .custom_flags((OFlag::O_PATH | OFlag::O_DIRECTORY).bits())
-                .open(&parent.source)?;
-            let directory = fs::metadata(&child.source)?.is_dir();
+            .filter(|parent| {
+                matches!(parent.mode.as_str(), "ro" | "rw")
+                    && target != Path::new(&parent.target)
+                    && target.starts_with(&parent.target)
+            })
+            .max_by_key(|parent| Path::new(&parent.target).components().count());
+        let Some(parent) = parent else { continue };
+        let relative = target.strip_prefix(&parent.target)?;
+        let root = pin_mount_source(profile, &parent.source, true)?;
+        if !root.metadata()?.is_dir() {
+            return Err(
+                format!("parent mount source is not a directory: {}", parent.source).into(),
+            );
+        }
+        let directory = pin_mount_source(profile, &child.source, false)?
+            .metadata()?
+            .is_dir();
+        as_user(profile, || {
             create_mountpoint_beneath(&root, relative, directory).map_err(|error| {
                 format!(
                     "cannot prepare nested mountpoint {} beneath {}: {error}",
                     child.target, parent.source
                 )
             })?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+fn resolve_managed_mounts(
+    profile: &Profile,
+    instance: &str,
+    runtime: &Path,
+    persistent_home: Option<&Path>,
+    mounts: &[Mount],
+) -> Result<Vec<Mount>> {
+    let state = Path::new(profile.get("state")?);
+    mounts
+        .iter()
+        .map(|mount| {
+            let source = match &mount.source {
+                MountSource::Path(path) => MountSource::Path(path.clone()),
+                MountSource::HostHome(path) => MountSource::HostHome(path.clone()),
+                MountSource::ProfilePath(relative) => {
+                    let path = as_user(profile, || {
+                        crate::storage::ensure_directory_beneath(
+                            state,
+                            &Path::new("shared").join(relative),
+                        )
+                    })?;
+                    MountSource::Path(path.to_string_lossy().into_owned())
+                }
+                MountSource::InstancePath(relative) => {
+                    let path = if persistent_home.is_some() {
+                        // Main and named instances have the same storage model.
+                        // Keeping the instance name in the path also makes the
+                        // lifecycle boundary apparent during manual inspection.
+                        let instance_root = Path::new("instances").join(instance);
+                        as_user(profile, || {
+                            crate::storage::ensure_directory_beneath(
+                                state,
+                                &instance_root.join(relative),
+                            )
+                        })?
+                    } else {
+                        // RuntimeDirectory is root-owned so unprivileged clients
+                        // cannot replace the anchor before the supervisor opens it.
+                        // The volume itself belongs to the sandbox owner and is
+                        // removed together with the instance runtime directory.
+                        let anchor = runtime.join("volumes");
+                        fs::create_dir_all(&anchor)?;
+                        own(&anchor, profile.host_uid()?, profile.host_gid()?)?;
+                        as_user(profile, || {
+                            crate::storage::ensure_directory_beneath(&anchor, Path::new(relative))
+                        })?
+                    };
+                    MountSource::Path(path.to_string_lossy().into_owned())
+                }
+            };
+            Ok(Mount {
+                mode: mount.mode.clone(),
+                source,
+                target: mount.target.clone(),
+            })
+        })
+        .collect()
+}
+
+fn validate_and_order_mounts(mounts: &mut [Mount]) -> Result<()> {
+    let mut targets = std::collections::BTreeSet::new();
+    for mount in mounts.iter() {
+        if !targets.insert(mount.target.as_str()) {
+            return Err(format!("duplicate mount target: {}", mount.target).into());
         }
-        Ok(())
-    })
+    }
+    mounts.sort_by(|left, right| {
+        Path::new(&left.target)
+            .components()
+            .count()
+            .cmp(&Path::new(&right.target).components().count())
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    Ok(())
 }
 fn clone_devices(profile: &Profile, source: &Path, destination: &Path, depth: usize) -> Result<()> {
     if depth > 5 {
@@ -1091,9 +1207,11 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         return Err("system services require an immutable Nix store profile".into());
     }
     check_supervisor_executable(profile)?;
-    // Named homes can be deleted while stopped. Keep the owner-side lifecycle
-    // lock until this supervisor exits, so deletion and startup never overlap.
-    let _storage_lock = if instance.starts_with("n-") {
+    // Persistent homes can change while stopped: named homes may be deleted,
+    // and main may need its one-time layout migration. Keep the owner-side
+    // lifecycle lock until this supervisor exits so those operations cannot
+    // overlap startup or a running instance.
+    let _storage_lock = if instance == "main" || instance.starts_with("n-") {
         Some(as_user(profile, || {
             crate::storage::lock_instance(profile, instance)
         })?)
@@ -1108,6 +1226,11 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     };
     if !runtime.is_dir() {
         return Err("missing systemd RuntimeDirectory".into());
+    }
+    if instance == "main" && profile.flag("persistent") {
+        as_user(profile, || {
+            crate::storage::migrate_legacy_main_home(profile)
+        })?;
     }
     let persistent_home = profile.persistent_home(instance)?;
     let reservation_key = format!(
@@ -1184,7 +1307,20 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     ];
     let namespace = netns(profile, &mut helpers)?;
     nspawn_arguments.push(format!("--network-namespace-path={}", namespace.display()));
-    let system_call_filter = profile.get("extraSystemCalls")?;
+    let mut system_call_filter = profile.get("extraSystemCalls")?.to_owned();
+    if profile
+        .values
+        .get("resourceLimits")
+        .is_some_and(|limits| limits.lines().any(|limit| limit.starts_with("MEMLOCK=")))
+    {
+        // nspawn's default allowlist rejects these syscalls with EPERM. A
+        // useful limit therefore has to permit the syscall group as well; the
+        // configured rlimit still bounds how much memory may be locked.
+        if !system_call_filter.is_empty() {
+            system_call_filter.push(' ');
+        }
+        system_call_filter.push_str("@memlock");
+    }
     if !system_call_filter.is_empty() {
         // nspawn always starts from its container allowlist. A positive filter
         // adds narrowly selected calls without replacing that baseline.
@@ -1212,25 +1348,18 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             .args(&profile.pasta);
         helpers.children.push(pasta.spawn()?);
     }
-    let mut mounts = profile.mounts.clone();
-    if let Some(home_source) = persistent_home {
-        as_user(profile, || {
-            fs::create_dir_all(&home_source)?;
-            Ok(())
-        })?;
-        mounts.insert(
-            0,
-            Mount {
-                mode: "rw".into(),
-                source: home_source.to_string_lossy().into(),
-                target: profile.get("home")?.into(),
-            },
-        );
-    }
+    let mut mounts = resolve_managed_mounts(
+        profile,
+        instance,
+        &runtime,
+        persistent_home.as_deref(),
+        &profile.mounts,
+    )
+    .map_err(|error| format!("cannot resolve managed mounts: {error}"))?;
     if !wayland.is_empty() {
         mounts.push(Mount {
             mode: "ro".into(),
-            source: format!("/run/user/{}/{wayland}", profile.host_uid()?),
+            source: MountSource::Path(format!("/run/user/{}/{wayland}", profile.host_uid()?)),
             target: "/run/host/wayland".into(),
         });
     }
@@ -1249,7 +1378,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         if profile.flag(flag) && Path::new(&source).exists() {
             mounts.push(Mount {
                 mode: "rw".into(),
-                source,
+                source: MountSource::Path(source),
                 target,
             });
         }
@@ -1259,7 +1388,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             prepare_portals(profile, instance, &runtime, uid_offset, &mut helpers)?;
         mounts.push(Mount {
             mode: "rw".into(),
-            source: socket.to_string_lossy().into(),
+            source: MountSource::Path(socket.to_string_lossy().into()),
             target: "/run/host/portal-bus".into(),
         });
         // This mount is prepared privately by root and already presents the
@@ -1272,7 +1401,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         if profile.flag("hostSessionBus") {
             mounts.push(Mount {
                 mode: "rw".into(),
-                source: socket.to_string_lossy().into(),
+                source: MountSource::Path(socket.to_string_lossy().into()),
                 target: "/run/host/session-bus".into(),
             });
         }
@@ -1292,7 +1421,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         let socket = proxy(profile, &directory, false, &mut helpers, None, Some(&rules))?;
         mounts.push(Mount {
             mode: "rw".into(),
-            source: socket.to_string_lossy().into(),
+            source: MountSource::Path(socket.to_string_lossy().into()),
             target: "/run/host/appearance-bus".into(),
         });
     }
@@ -1312,7 +1441,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             let socket = proxy(profile, &user_runtime, system, &mut helpers, None, None)?;
             mounts.push(Mount {
                 mode: "rw".into(),
-                source: socket.to_string_lossy().into(),
+                source: MountSource::Path(socket.to_string_lossy().into()),
                 target: target.into(),
             });
         }
@@ -1355,26 +1484,27 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         })?;
         mounts.push(Mount {
             mode: "rw".into(),
-            source: socket.to_string_lossy().into(),
+            source: MountSource::Path(socket.to_string_lossy().into()),
             target: "/nix/var/nix/daemon-socket/socket".into(),
         });
     }
     // Host root is deliberately absent from owner-mapped bind mounts. It
     // cannot mkdir there (EOVERFLOW), so prepare targets as the host owner
     // before nspawn enters its mount setup. Do not weaken the UID mappings.
+    validate_and_order_mounts(&mut mounts)?;
     prepare_nested_mountpoints(profile, &mounts)?;
     let mut devices = Vec::new();
     for (i, bind) in mounts.iter().enumerate() {
         if bind.mode == "device-pattern" {
             let selection = DeviceSource {
-                source: PathBuf::from(&bind.source),
+                source: PathBuf::from(bind.source.path()?),
                 destination: stage.join(format!("device-patterns-{i}")),
                 pattern: true,
             };
             selection.refresh(profile)?;
             let clone = Mount {
                 mode: "device".into(),
-                source: selection.destination.to_string_lossy().into(),
+                source: MountSource::Path(selection.destination.to_string_lossy().into()),
                 target: format!("/run/host/device-patterns/{i}"),
             };
             stage_mount(
@@ -1401,20 +1531,20 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
                 "/dev/urandom",
                 "/dev/tty",
             ]
-            .contains(&bind.source.as_str())
+            .contains(&bind.source.path()?)
             {
                 continue;
             }
             let deferred_directory =
-                ["/dev/dri", "/dev/input", "/dev/bus/usb"].contains(&bind.source.as_str());
-            if !Path::new(&bind.source).exists() && !deferred_directory {
+                ["/dev/dri", "/dev/input", "/dev/bus/usb"].contains(&bind.source.path()?);
+            if !Path::new(bind.source.path()?).exists() && !deferred_directory {
                 continue;
             }
             let cloned = stage.join(format!("devices-{i}"));
             if deferred_directory {
                 fs::create_dir_all(&cloned)?;
             }
-            if let Err(error) = clone_devices(profile, Path::new(&bind.source), &cloned, 0) {
+            if let Err(error) = clone_devices(profile, Path::new(bind.source.path()?), &cloned, 0) {
                 // Explicit device lists can include hardware whose ACLs are
                 // unavailable in this session. Forward only accessible nodes;
                 // lack of access must not prevent the whole sandbox booting.
@@ -1427,7 +1557,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
                 continue;
             }
             let mut clone = bind.clone();
-            clone.source = cloned.to_string_lossy().into();
+            clone.source = MountSource::Path(cloned.to_string_lossy().into());
             stage_mount(
                 profile,
                 &root,
@@ -1438,7 +1568,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
                 uid_offset,
             )?;
             devices.push(DeviceSource {
-                source: PathBuf::from(&bind.source),
+                source: PathBuf::from(bind.source.path()?),
                 destination: cloned,
                 pattern: false,
             });
@@ -1451,7 +1581,13 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
                 bind,
                 &mut nspawn_arguments,
                 uid_offset,
-            )?;
+            )
+            .map_err(|error| {
+                format!(
+                    "cannot stage mount {} at {}: {error}",
+                    bind.source, bind.target
+                )
+            })?;
         }
     }
     nspawn_arguments.push(profile.get("init")?.into());

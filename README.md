@@ -334,11 +334,11 @@ Guest hostnames default to the template and instance name: `dev-main`,
 These are set at launch; instances reuse the same NixOS build. Set
 `networking.hostName` in `nixosModules` to use a fixed hostname for a profile.
 
-Homes are stored under `${config.xdg.stateHome}/nook/<profile>/home` for main
-instances and `${config.xdg.stateHome}/nook/<profile>/instances/n-<name>/home`
-for named ones. Home Manager fixes this path when it evaluates the profile, so
-changing the runtime `XDG_STATE_HOME` alone does not move an installed profile's
-state. Set a profile's `stateDirectory` to an absolute path to override it.
+Homes are stored under
+`${config.xdg.stateHome}/nook/<profile>/instances/<instance>/home`, where the
+instance is `main` or `n-<name>`. Home Manager fixes this path when it evaluates
+the profile, so changing the runtime `XDG_STATE_HOME` alone does not move an
+installed profile's state. Set a profile's `stateDirectory` to an absolute path to override it.
 Relative values remain supported under the home directory. Ephemeral homes live
 on the host's `/run` tmpfs. Running `nk-dev` from inside dev's backing home opens
 the corresponding guest directory; host symlink aliases work too.
@@ -361,12 +361,87 @@ deletion is not transactional. Bind-mount sources outside the instance's saved
 directory are left alone. Main instances belong to their Nix profile and cannot be
 deleted this way; ephemeral homes disappear when stopped.
 
+### Volumes and host directories
+
+Use `mounts` when an application needs storage outside its sandbox home. A
+mount has an explicit source scope and target. The default source is an
+instance volume, so named instances do not silently share writable data with
+each other:
+
+```nix
+programs.nook.sandboxes.dev.mounts = {
+  build-store = {
+    # source.scope = "instance"; is the default
+    target = "/build-store";
+  };
+
+  shared-downloads = {
+    # Sharing across trust zones is explicit.
+    source.scope = "profile";
+    target = {
+      scope = "sandboxHome";
+      path = "Downloads";
+    };
+  };
+
+  projects = {
+    source = {
+      scope = "hostHome";
+      path = "Projects";
+    };
+    target = {
+      scope = "sandboxHome";
+      path = "Projects";
+    };
+  };
+
+  system-sources = {
+    source = {
+      scope = "host";
+      path = "/usr/src";
+    };
+    target = "/usr/src";
+    readOnly = true;
+  };
+};
+```
+
+`instance` volumes persist with a persistent main or named instance. They are
+temporary for ephemeral instances and for a main instance whose profile has
+`persistent = false`. `profile` volumes live below `state/shared/volumes` and
+are shared by its main, named, and ephemeral instances. `hostHome` avoids
+embedding a username or home directory in a reusable module; its path is
+relative to the owning account's home. `host` accepts an explicit absolute
+path. A structured `sandboxHome` target is similarly relative to the sandbox
+user's home. Nook declares the sandbox home itself through the same mount
+manifest and instance-lifecycle resolver. Every persistent instance uses the
+same layout: `state/instances/main/home` for main and
+`state/instances/n-NAME/home` for a named instance. Managed instance volumes
+sit beside it below `volumes`.
+At launch, the kernel resolves `hostHome` paths beneath an open descriptor for
+the owner's home. Symlinks that remain inside the home work, while `..`,
+absolute symlinks, and magic-link escapes are rejected.
+
+Nook creates managed `profile` and `instance` volumes as the owning host user.
+It refuses symlinks and filesystem mount transitions below their managed
+roots. Volume names come from the `mounts` attribute names and may contain
+lowercase letters, digits, and hyphens. Existing `bindMounts` remain available
+as the low-level interface for absolute host paths.
+
+Resource limits apply at both systemd layers, so entered commands and guest
+services inherit them. For example, a workload that locks memory can use
+`resourceLimits.MEMLOCK = "1G";` or `"infinity"`; other standard limits such as
+`CORE`, `NOFILE`, and `NPROC` use the same interface. Values follow systemd's
+`Limit*` syntax, including `soft:hard` pairs. Restart running instances after
+changing resource limits.
+
 ## Isolation and host access
 
 Instances keep build output, sccache, and rootless Podman storage separate. The
 Nix store is shared read-only. Container root maps to a high host UID, never
-host root. Writable `bindMounts` deliberately grant shared access to their
-sources, including to every named and ephemeral instance of that profile.
+host root. Writable host mounts and profile volumes deliberately grant shared
+access to their sources. Instance volumes keep each named or ephemeral
+instance in its own trust zone.
 
 Only Wayland is forwarded from the host display. `startX = true` starts a private
 [`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite) inside

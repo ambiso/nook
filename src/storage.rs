@@ -5,8 +5,64 @@ use crate::config::{Profile, Result};
 use nix::fcntl::{Flock, FlockArg};
 use rustix::{
     fd::{AsFd, OwnedFd},
-    fs::{AtFlags, Dir, FileType, Mode, OFlags, ResolveFlags, fstat, openat2, statat, unlinkat},
+    fs::{
+        AtFlags, Dir, FileType, Mode, OFlags, ResolveFlags, fstat, mkdirat, open, openat2,
+        renameat, statat, unlinkat,
+    },
 };
+
+/// Open an existing path relative to an anchor without permitting `..`, an
+/// absolute symlink, or a magic link to escape that anchor. Ordinary symlinks
+/// and mount points which still resolve beneath the anchor remain usable.
+pub fn open_beneath(root_path: &Path, relative: &Path) -> Result<File> {
+    let root = File::from(open(
+        root_path,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    Ok(File::from(openat2(
+        &root,
+        relative,
+        OFlags::PATH | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
+    )?))
+}
+
+/// Create and reopen a directory without following links or crossing mounts
+/// below the configured anchor. Call this with the sandbox owner's credentials
+/// when the resulting volume is owner-managed.
+pub fn ensure_directory_beneath(root_path: &Path, relative: &Path) -> Result<PathBuf> {
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("managed directory must use a non-empty relative path".into());
+    }
+    fs::create_dir_all(root_path)?;
+    // stateDirectory itself may intentionally be a host symlink. Resolve that
+    // configured anchor once, then forbid links and mount transitions below it.
+    let canonical = fs::canonicalize(root_path)?;
+    let mut directory = File::open(&canonical)?;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            unreachable!("validated above")
+        };
+        match mkdirat(&directory, name, Mode::RWXU) {
+            Ok(()) | Err(rustix::io::Errno::EXIST) => (),
+            Err(error) => return Err(error.into()),
+        }
+        directory = File::from(openat2(
+            &directory,
+            Path::new(name),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV,
+        )?);
+    }
+    Ok(canonical.join(relative))
+}
 use std::{
     ffi::CStr,
     fs::{self, File, OpenOptions},
@@ -34,6 +90,52 @@ pub fn lock_instance(profile: &Profile, instance: &str) -> Result<Flock<File>> {
     Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, error)| {
         format!("instance is busy starting, running, or being deleted: {error}").into()
     })
+}
+
+/// Move the pre-instance-layout main home into the uniform instance tree.
+///
+/// This compatibility migration is deliberately a rename rather than a copy:
+/// it is atomic, preserves all metadata, and cannot leave two diverging homes.
+/// The caller must hold main's lifecycle lock so no second supervisor can race
+/// the move. Both source and destination parents are opened beneath the state
+/// directory before `renameat`, so path replacement cannot redirect the move.
+pub fn migrate_legacy_main_home(profile: &Profile) -> Result<()> {
+    if nix::unistd::geteuid().as_raw() != profile.host_uid()? {
+        return Err("instance storage must be managed as its host owner".into());
+    }
+
+    let state_path = Path::new(profile.get("state")?);
+    fs::create_dir_all(state_path)?;
+    let state_path = fs::canonicalize(state_path)?;
+    let state = File::open(&state_path)?;
+    let legacy = match open_directory(&state, Path::new("home")) {
+        Ok(home) => home,
+        Err(error)
+            if error.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(format!("cannot inspect legacy main home: {error}").into()),
+    };
+
+    ensure_directory_beneath(&state_path, Path::new("instances/main"))?;
+    let destination = open_directory(&state, Path::new("instances/main"))?;
+    match statat(&destination, "home", AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => {
+            return Err(format!(
+                "both legacy main home {} and new main home {} contain entries; refusing to merge or overwrite them",
+                state_path.join("home").display(),
+                state_path.join("instances/main/home").display()
+            )
+            .into());
+        }
+        Err(rustix::io::Errno::NOENT) => (),
+        Err(error) => return Err(error.into()),
+    }
+
+    verify_entry(&state, "home", &legacy)?;
+    renameat(&state, "home", &destination, "home")?;
+    Ok(())
 }
 
 pub struct SavedInstance {
@@ -222,6 +324,69 @@ mod tests {
         assert!(lock_instance(&profile, "n-test").is_err());
         drop(lock);
         assert!(lock_instance(&profile, "n-test").is_ok());
+    }
+
+    #[test]
+    fn legacy_main_home_migration_is_atomic_and_refuses_conflicts() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = profile(temporary.path());
+        fs::create_dir(temporary.path().join("home")).unwrap();
+        fs::write(temporary.path().join("home/keep"), "main data").unwrap();
+
+        migrate_legacy_main_home(&profile).unwrap();
+        assert!(!temporary.path().join("home").exists());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("instances/main/home/keep")).unwrap(),
+            "main data"
+        );
+        migrate_legacy_main_home(&profile).unwrap();
+
+        fs::create_dir(temporary.path().join("home")).unwrap();
+        fs::write(temporary.path().join("home/legacy"), "legacy").unwrap();
+        assert!(migrate_legacy_main_home(&profile).is_err());
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("home/legacy")).unwrap(),
+            "legacy"
+        );
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("instances/main/home/keep")).unwrap(),
+            "main data"
+        );
+    }
+
+    #[test]
+    fn managed_directories_stay_beneath_their_anchor() {
+        let temporary = tempfile::tempdir().unwrap();
+        let anchor = temporary.path().join("state");
+        assert_eq!(
+            ensure_directory_beneath(&anchor, Path::new("instances/n-test/volumes/cache")).unwrap(),
+            fs::canonicalize(&anchor)
+                .unwrap()
+                .join("instances/n-test/volumes/cache")
+        );
+        assert!(anchor.join("instances/n-test/volumes/cache").is_dir());
+
+        let outside = temporary.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, anchor.join("escape")).unwrap();
+        assert!(ensure_directory_beneath(&anchor, Path::new("escape/new")).is_err());
+        assert!(!outside.join("new").exists());
+        assert!(ensure_directory_beneath(&anchor, Path::new("../outside/new")).is_err());
+    }
+
+    #[test]
+    fn anchored_paths_allow_internal_symlinks_but_reject_escapes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("home");
+        let outside = temporary.path().join("outside");
+        fs::create_dir_all(root.join("state/projects")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        symlink("state/projects", root.join("Projects")).unwrap();
+        symlink(&outside, root.join("escape")).unwrap();
+
+        assert!(open_beneath(&root, Path::new("Projects")).is_ok());
+        assert!(open_beneath(&root, Path::new("escape")).is_err());
+        assert!(open_beneath(&root, Path::new("../outside")).is_err());
     }
 
     #[test]

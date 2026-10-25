@@ -18,6 +18,7 @@
   dnsSearch,
   launcher,
   devicePatterns,
+  resourceLimits,
   ...
 }:
 let
@@ -149,7 +150,12 @@ in
   systemd.services.systemd-journal-catalog-update.enable = lib.mkDefault false;
   # Successful unit status lines cross nspawn's console into the host journal.
   # Keep failures visible without copying every boot progress message there.
-  systemd.settings.Manager.ShowStatus = lib.mkDefault "error";
+  systemd.settings.Manager = {
+    ShowStatus = lib.mkDefault "error";
+  }
+  // lib.mapAttrs' (
+    limit: value: lib.nameValuePair "DefaultLimit${limit}" (lib.mkDefault value)
+  ) resourceLimits;
   # OpenSSH validates included configuration ownership. Copy its system files
   # into the guest instead of including nobody-owned paths from the public,
   # untranslated store mount.

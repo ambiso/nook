@@ -255,8 +255,17 @@ pkgs.testers.runNixOSTest {
         RemainAfterExit = true;
       };
       script = ''
-        mkdir -p /home/alice/.sandbox/check/home/SharedStorage
-        mount -t tmpfs -o mode=0750,uid=1000,gid=100 tmpfs /home/alice/.sandbox/check/home/SharedStorage
+        home=/home/alice/.sandbox/check/instances/main/home
+        if [ ! -d "$home" ]; then
+          # Seed the legacy layout before the first sandbox start so the test
+          # exercises its automatic migration, including a nested mount.
+          home=/home/alice/.sandbox/check/home
+        fi
+        install -d -o alice -g users -m 0700 "$home"
+        mkdir -p "$home/SharedStorage"
+        if ! mountpoint -q "$home/SharedStorage"; then
+          mount -t tmpfs -o mode=0750,uid=1000,gid=100 tmpfs "$home/SharedStorage"
+        fi
       '';
     };
     systemd.user.services.test-x11-sockets = {
@@ -348,6 +357,10 @@ pkgs.testers.runNixOSTest {
         dnsSearch = [ "sandbox.test" ];
         startX = true;
         extraSystemCalls = [ "perf_event_open" ];
+        resourceLimits = {
+          CORE = 0;
+          MEMLOCK = "64M";
+        };
         systemBusPolicies."org.freedesktop.hostname1" = "talk";
         podman = true;
         nix = true;
@@ -392,7 +405,7 @@ pkgs.testers.runNixOSTest {
         ];
         bindMounts = [
           {
-            source = "/home/alice/.sandbox/check/home/SharedStorage";
+            source = "/home/alice/.sandbox/check/instances/main/home/SharedStorage";
             target = "/home/alice/SharedStorage";
           }
           # Deliberately declare the child first. Both mountpoints are absent
@@ -410,6 +423,27 @@ pkgs.testers.runNixOSTest {
             target = "/shared";
           }
         ];
+        mounts = {
+          host-home = {
+            source = {
+              scope = "hostHome";
+              path = "managed-host";
+            };
+            target = {
+              scope = "sandboxHome";
+              path = "ManagedHost";
+            };
+          };
+          profile-shared = {
+            source.scope = "profile";
+            target = "/volumes/profile";
+          };
+          instance-private = {
+            # Instance scope is the default. It follows the home lifecycle:
+            # persistent for main/named homes and temporary for ephemeral ones.
+            target = "/volumes/instance";
+          };
+        };
         homeManagerModules = [
           {
             programs.ssh = {
@@ -482,7 +516,6 @@ pkgs.testers.runNixOSTest {
     systemd.tmpfiles.rules = [
       "d /home/alice/.sandbox 0700 alice users -"
       "d /home/alice/.sandbox/check 0700 alice users -"
-      "d /home/alice/.sandbox/check/home 0700 alice users -"
       "d /home/alice/shared 0700 alice users -"
       "d /home/alice/inbox-source 0700 alice users -"
       "f /home/alice/nested-share.txt 0600 alice users - nested-bind-works"

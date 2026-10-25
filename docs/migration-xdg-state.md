@@ -45,3 +45,13 @@ If the configuration has already switched and a profile looks empty, do not
 delete either directory. Restore its legacy `stateDirectory` override and apply
 that configuration to reconnect to the existing data. You can migrate later
 when you are ready to stop the sandboxes.
+
+## Main instance directory layout
+
+Nook now stores the main instance beside named instances at
+`<state>/instances/main/home`. During the compatibility period, the first start
+of a persistent main instance atomically renames the former `<state>/home`
+directory into place. The sandbox must be stopped for its new supervisor to
+perform the migration. Nook leaves the source untouched and reports an error
+if both old and new homes exist, because choosing or merging their contents
+automatically could lose data.

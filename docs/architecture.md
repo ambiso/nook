@@ -56,7 +56,7 @@ named, and ephemeral instances reuse that description, each with a separate home
 
 | Instance | Home on the host | Lifetime |
 | --- | --- | --- |
-| Main, default | `${config.xdg.stateHome}/nook/<profile>/home` | Survives shutdown |
+| Main, default | `${config.xdg.stateHome}/nook/<profile>/instances/main/home` | Survives shutdown |
 | Named | `${config.xdg.stateHome}/nook/<profile>/instances/n-<name>/home` | Survives shutdown |
 | Ephemeral | Beneath `/run/nook-<owner-key>-<profile>-<instance>/image/root` | Deleted at shutdown |
 

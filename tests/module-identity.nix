@@ -41,6 +41,10 @@ let
     ];
     home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment = [ "CUSTOM_HINT" ];
     home-manager.users.alice.programs.nook.sandboxes.dev.extraSystemCalls = [ "perf_event_open" ];
+    home-manager.users.alice.programs.nook.sandboxes.dev.resourceLimits = {
+      CORE = 0;
+      MEMLOCK = "64M";
+    };
   };
   nixDefaults = evaluate {
     home-manager.users.alice.programs.nook.sandboxes.dev.nix = true;
@@ -212,6 +216,8 @@ assert explicit.systemd.services."sandbox-4242-dev@".requires == [ ];
 assert explicit.systemd.services."sandbox-4242-dev@".wants == [ "systemd-machined.socket" ];
 assert explicit.systemd.services."sandbox-4242-dev@".after == [ "systemd-machined.socket" ];
 assert explicit.systemd.services."sandbox-4242-dev@".unitConfig.X-StopOnRemoval == false;
+assert explicit.systemd.services.${service}.serviceConfig.LimitCORE == 0;
+assert explicit.systemd.services.${service}.serviceConfig.LimitMEMLOCK == "64M";
 pkgs.writeText "nook-module-identity" (
   builtins.toJSON {
     guestProfile = guest.sandboxes.dev._profile.outPath;

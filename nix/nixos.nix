@@ -82,7 +82,10 @@ in
               TimeoutStartSec = 120;
               TimeoutStopSec = 120;
               Restart = "no";
-            };
+            }
+            // lib.mapAttrs' (limit: value: lib.nameValuePair "Limit${limit}" value) (
+              lib.filterAttrs (_: value: value != null) p.profile.resourceLimits
+            );
           };
         in
         [ (lib.nameValuePair (unitName p) service) ]
