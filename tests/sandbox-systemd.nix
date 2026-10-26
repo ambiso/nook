@@ -400,7 +400,6 @@ pkgs.testers.runNixOSTest {
           pulseaudio
           util-linux
           gnugrep
-          podman
           curl
           libnotify
           perf

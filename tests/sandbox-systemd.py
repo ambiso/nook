@@ -787,6 +787,10 @@ for desktop_id, query in [
     # A real image with nonzero file ownership exercises more than podman info:
     # import/chown, subordinate UID/GID mappings, and an enforced memory limit.
     inside(f"""
+        case $(command -v podman) in
+          *sandbox-session-tools/bin/podman) ;;
+          *) exit 1 ;;
+        esac
         rm -rf ~/.local/share/containers/tmp
         env -u TMPDIR podman info >/dev/null
         test -d ~/.local/share/containers/tmp
