@@ -1303,6 +1303,10 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         "--private-users-ownership=map".into(),
         "--bind-ro=/nix/store:/nix/store:noidmap".into(),
         "--tmpfs=/tmp:mode=1777".into(),
+        // The guest NixOS closure declares the host's IANA timezone. Keep its
+        // identifiable /etc/localtime symlink instead of replacing it with an
+        // anonymous copy, which Steam reports as Etc/Unknown.
+        "--timezone=off".into(),
         "--resolv-conf=off".into(),
     ];
     let namespace = netns(profile, &mut helpers)?;

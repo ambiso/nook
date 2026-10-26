@@ -173,7 +173,10 @@ pkgs.testers.runNixOSTest {
         };
       }
     ];
-    time.timeZone = "Europe/Vienna";
+    # Keep the fixture independent of the developer host's timezone. The
+    # integration assertion below verifies that this NixOS value reaches the
+    # guest unchanged.
+    time.timeZone = "Europe/Berlin";
     services.unbound = {
       enable = true;
       settings.server = {

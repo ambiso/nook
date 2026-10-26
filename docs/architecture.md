@@ -265,7 +265,11 @@ programs.nook.sandboxes.dev.nixosModules = [ {
 } ];
 ```
 
-Guests use the host timezone through nspawn's automatic setup.
+The NixOS integration passes the host's timezone into each guest evaluation,
+and nspawn leaves that declarative `/etc/localtime` symlink intact. Applications
+can therefore distinguish an IANA zone such as `Europe/Vienna` from another
+zone with the same current UTC offset. Standalone Home Manager evaluations can
+set `programs.nook.host.timeZone` explicitly.
 
 ## Inspecting an instance
 

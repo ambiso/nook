@@ -3,12 +3,14 @@
   pkgs,
   lib,
   config,
+  osConfig ? null,
   ...
 }:
 let
   inherit (lib) types;
   homeConfig = config;
   outer = config.programs.nook;
+  hostTimeZone = outer.host.timeZone;
   launcher = outer.package;
   desktopEnvironmentVariables = [
     "XDG_CURRENT_DESKTOP"
@@ -401,6 +403,7 @@ let
               devicePatterns
               ;
             inherit resourceLimits;
+            inherit hostTimeZone;
             inherit launcher;
           };
           modules = [ ./container.nix ] ++ cfg.nixosModules;
@@ -918,6 +921,12 @@ in
       type = types.ints.between 1 99999;
       default = 100;
       description = "Primary group ID inside the guest, independent of the host account.";
+    };
+    host.timeZone = lib.mkOption {
+      type = types.nullOr types.str;
+      default = if osConfig == null then null else osConfig.time.timeZone;
+      defaultText = lib.literalExpression "osConfig.time.timeZone";
+      description = "Host timezone inherited by sandbox NixOS systems; set this when evaluating Home Manager outside NixOS.";
     };
     profiles = lib.mkOption {
       type = types.package;

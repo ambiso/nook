@@ -341,6 +341,7 @@ try:
         "fc-match 'sans-serif:lang=ja:charset=65e5' | grep 'Noto Sans CJK JP'; grep -F 'search sandbox.test' /etc/resolv.conf; getent ahostsv4 search-check | grep -F 192.0.2.73; command -v xdg-open rg ps which strace"
     )
     assert inside("date +%Z").strip() == machine.succeed("date +%Z").strip()
+    inside("test -L /etc/localtime; readlink /etc/localtime | grep -F Europe/Berlin")
     machine.succeed("mknod -m666 /dev/sandbox-hotplug-test c 1 3")
     machine.wait_until_succeeds(
         launcher("launch check -- bash -ec 'echo hotplug >/dev/sandbox-hotplug-test'")

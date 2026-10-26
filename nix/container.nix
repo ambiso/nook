@@ -19,6 +19,7 @@
   launcher,
   devicePatterns,
   resourceLimits,
+  hostTimeZone,
   ...
 }:
 let
@@ -125,6 +126,7 @@ in
   # survives boot. Named instances share this system closure; their names are
   # only known at launch. A guest module can still set a static hostname.
   networking.hostName = lib.mkDefault "";
+  time.timeZone = lib.mkIf (hostTimeZone != null) (lib.mkDefault hostTimeZone);
   networking.useDHCP = false;
   networking.firewall.enable = false;
   networking.nameservers = [ "169.254.1.1" ];
