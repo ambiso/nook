@@ -8,6 +8,7 @@
   home,
   shellPackage,
   appPackage,
+  sessionTools,
   activation,
   environment,
   startX,
@@ -20,6 +21,7 @@
   devicePatterns,
   resourceLimits,
   hostTimeZone,
+  nixEnabled,
   ...
 }:
 let
@@ -97,6 +99,22 @@ let
       "\${XDG_STATE_HOME}" = stateHome;
     }
   );
+  # NixOS normally adds these while sourcing /etc/profile. Nook commands are
+  # transient user services and deliberately do not source shell startup
+  # files, so provide the same values to every command. This matters for GUI
+  # launchers and scripts just as much as it does for interactive shells.
+  standardCommandEnvironment = lib.filterAttrs (_: value: value != null) (
+    {
+      NIXPKGS_CONFIG = config.environment.variables.NIXPKGS_CONFIG;
+      NIX_USER_PROFILE_DIR = "/nix/var/nix/profiles/per-user/${username}";
+      NIX_PROFILES = lib.concatStringsSep " " (
+        map expandUserPaths (lib.reverseList config.environment.profiles)
+      );
+    }
+    // lib.optionalAttrs nixEnabled {
+      NIX_REMOTE = config.environment.variables.NIX_REMOTE;
+    }
+  );
   cursorSuffixes = config.environment.profileRelativeEnvVars.XCURSOR_PATH or [ ];
   cursorPath = expandUserPaths (
     lib.concatStringsSep ":" (
@@ -110,6 +128,7 @@ let
   # respects variables explicitly unset with null in a guest module.
   sessionEnvironment =
     lib.filterAttrs (name: _: lib.elem name sessionVariableNames) config.environment.variables
+    // standardCommandEnvironment
     // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; }
     // {
       # OpenSSH's FIDO signing path uses askpass as a passive touch/PIN
@@ -243,6 +262,21 @@ in
   environment.sessionVariables = lib.optionalAttrs (environment ? XCURSOR_PATH) {
     XCURSOR_PATH = lib.mkBefore (lib.splitString ":" environment.XCURSOR_PATH);
   };
+  # Bash sources the generated NixOS environment when started interactively,
+  # replacing the wrapper-first PATH and values supplied by Nook's command
+  # entrypoint. Restore them after normal shell initialization. This also
+  # applies to other shells enabled by guest modules.
+  environment.shellInit = lib.mkAfter ''
+    case ":$PATH:" in
+      *":${sessionTools}/bin:"*) ;;
+      *) export PATH=${sessionTools}/bin:${appPackage}/bin:$PATH ;;
+    esac
+    ${lib.concatStringsSep "\n" (
+      lib.mapAttrsToList (
+        name: value: "export ${name}=${lib.escapeShellArg (toString value)}"
+      ) sessionEnvironment
+    )}
+  '';
   # Entries run as transient user services without sourcing /etc/profile.
   # Seed the user manager's inherited environment as well as login shells.
   systemd.globalEnvironment = sessionEnvironment;

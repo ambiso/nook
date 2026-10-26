@@ -394,6 +394,7 @@ let
               gid
               home
               appPackage
+              sessionTools
               activation
               ;
             inherit shellPackage;
@@ -410,6 +411,7 @@ let
             inherit resourceLimits;
             inherit hostTimeZone;
             inherit launcher;
+            inherit nixEnabled;
           };
           modules = [ ./container.nix ] ++ cfg.nixosModules;
         }).config;

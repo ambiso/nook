@@ -526,12 +526,33 @@ try:
         test "$NOOK_TEST_HOST_ENV" = forwarded
         test -x "$SSH_ASKPASS"
         test "$MOZ_ENABLE_WAYLAND" = 1
+        test "$NIX_REMOTE" = daemon
+        test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
+        test "$NIX_USER_PROFILE_DIR" = /nix/var/nix/profiles/per-user/alice
+        test -n "$NIX_PROFILES"
+        case $(command -v systemctl) in
+          *sandbox-session-tools/bin/systemctl) ;;
+          *) exit 1 ;;
+        esac
         test "$SANDBOX_SHARED_MODULE" = applied
         test "$SANDBOX_PROFILE_IMPORT" = applied
         test -S /run/user/1000/bus
         test -w /dev/sandbox-test
         echo check >/dev/sandbox-test
         test ! -r /dev/kmsg
+    """)
+    # Interactive shell initialization must retain Nook's command wrappers and
+    # trusted session values after NixOS initializes its normal shell profile.
+    inside("""
+        bash -ic '
+          case $(command -v systemctl) in
+            *sandbox-session-tools/bin/systemctl) ;;
+            *) exit 1 ;;
+          esac
+          test -x "$SSH_ASKPASS"
+          test "$NIX_REMOTE" = daemon
+          test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
+        '
     """)
 
     # Real listeners exist on the host under both X11 addressing forms. A
