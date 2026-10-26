@@ -365,12 +365,17 @@ let
         pkgs.runCommand "sandbox-session-tools" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
           ''
             mkdir -p "$out/bin"
-            for tool in systemctl systemd-run busctl systemd-analyze podman; do
+            for tool in systemctl systemd-run busctl systemd-analyze; do
               if [ -x "${appPackage}/bin/$tool" ]; then
                 makeWrapper "${appPackage}/bin/$tool" "$out/bin/$tool" \
                   --run 'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; unset DBUS_SYSTEM_BUS_ADDRESS'
               fi
             done
+            if [ -x "${appPackage}/bin/podman" ]; then
+              makeWrapper "${appPackage}/bin/podman" "$out/bin/podman" \
+                --run 'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; unset DBUS_SYSTEM_BUS_ADDRESS' \
+                --run 'if [ -z "''${TMPDIR:-}" ]; then export TMPDIR="$HOME/.local/share/containers/tmp"; install -d -m 0700 -- "$TMPDIR"; fi'
+            fi
             ${lib.optionalString (hm != null) ''
               ln -s ${homeManagerRecovery}/bin/nook-home-manager "$out/bin/nook-home-manager"
             ''}

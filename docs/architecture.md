@@ -86,6 +86,13 @@ Enter it with `nk shell PROFILE`, then run
 `nook-home-manager switch -b backup` to preserve conflicts beside their original
 paths. Stop and relaunch the instance after activation succeeds.
 
+Podman image downloads normally stage compressed layers in `/var/tmp`, which is
+part of the guest's temporary root. In Podman-enabled profiles, Nook's command
+wrapper defaults `TMPDIR` to `~/.local/share/containers/tmp` so large pulls use
+the instance home alongside its image store. An explicitly supplied `TMPDIR`
+still takes precedence. For ephemeral instances both the home and image store
+remain temporary by design.
+
 Rebuilds do not restart running instances (`restartIfChanged = false`). If a
 service's launch-time supervisor contract is unchanged, NixOS requests an
 `ExecReload`. The narrow `nook-root` helper holds a per-instance reload lock, verifies the

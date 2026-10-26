@@ -766,6 +766,10 @@ for desktop_id, query in [
     # A real image with nonzero file ownership exercises more than podman info:
     # import/chown, subordinate UID/GID mappings, and an enforced memory limit.
     inside(f"""
+        rm -rf ~/.local/share/containers/tmp
+        env -u TMPDIR podman info >/dev/null
+        test -d ~/.local/share/containers/tmp
+        test $(stat -c %a ~/.local/share/containers/tmp) = 700
         image=$(podman import --signature-policy {POLICY} {IMAGE} sandbox-uid-check)
         podman run --signature-policy {POLICY} --rm --network=none \
             --user=123:456 --memory=64m --pids-limit=32 \
