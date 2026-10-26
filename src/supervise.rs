@@ -739,7 +739,12 @@ fn stage_mount(
 // Create a mountpoint without following guest-controlled symlinks out of the
 // selected parent mount. Directory FDs also keep concurrent path replacements
 // from redirecting later components. The caller runs with the owner's IDs.
-fn create_mountpoint_beneath(root: &File, relative: &Path, directory: bool) -> Result<()> {
+fn create_mountpoint_beneath(
+    root: &File,
+    relative: &Path,
+    directory: bool,
+    create: bool,
+) -> Result<()> {
     let components: Vec<_> = relative.components().collect();
     let mut parent = root.try_clone()?;
     for (index, component) in components.iter().enumerate() {
@@ -757,6 +762,9 @@ fn create_mountpoint_beneath(root: &File, relative: &Path, directory: bool) -> R
             };
         let descriptor = match openat(&parent, *name, flags, Mode::empty()) {
             Ok(descriptor) => descriptor,
+            Err(Errno::ENOENT) if !create => {
+                return Err("nested mountpoint is absent beneath a read-only source".into());
+            }
             Err(Errno::ENOENT) => {
                 let created = if is_directory {
                     mkdirat(&parent, *name, Mode::S_IRWXU)
@@ -813,7 +821,8 @@ fn prepare_nested_mountpoints(profile: &Profile, mounts: &[Mount]) -> Result<()>
             .max_by_key(|parent| Path::new(&parent.target).components().count());
         let Some(parent) = parent else { continue };
         let relative = target.strip_prefix(&parent.target)?;
-        let root = pin_mount_source(profile, &parent.source, true)?;
+        let writable = parent.mode == "rw";
+        let root = pin_mount_source(profile, &parent.source, writable)?;
         if !root.metadata()?.is_dir() {
             return Err(
                 format!("parent mount source is not a directory: {}", parent.source).into(),
@@ -823,7 +832,7 @@ fn prepare_nested_mountpoints(profile: &Profile, mounts: &[Mount]) -> Result<()>
             .metadata()?
             .is_dir();
         as_user(profile, || {
-            create_mountpoint_beneath(&root, relative, directory).map_err(|error| {
+            create_mountpoint_beneath(&root, relative, directory, writable).map_err(|error| {
                 format!(
                     "cannot prepare nested mountpoint {} beneath {}: {error}",
                     child.target, parent.source
@@ -1912,14 +1921,30 @@ mod tests {
         symlink(outside.path().join("existing"), root.path().join("file")).unwrap();
         let directory = fs::File::open(root.path()).unwrap();
 
-        assert!(create_mountpoint_beneath(&directory, Path::new("escape/new"), true).is_err());
-        assert!(create_mountpoint_beneath(&directory, Path::new("file"), false).is_err());
-        assert!(create_mountpoint_beneath(&directory, Path::new("../new"), true).is_err());
+        assert!(
+            create_mountpoint_beneath(&directory, Path::new("escape/new"), true, true).is_err()
+        );
+        assert!(create_mountpoint_beneath(&directory, Path::new("file"), false, true).is_err());
+        assert!(create_mountpoint_beneath(&directory, Path::new("../new"), true, true).is_err());
         assert!(!outside.path().join("new").exists());
         assert_eq!(
             fs::read_to_string(outside.path().join("existing")).unwrap(),
             "keep this content"
         );
+    }
+
+    #[test]
+    fn read_only_parent_mounts_are_not_modified_for_nested_targets() {
+        use super::create_mountpoint_beneath;
+        use std::{fs, path::Path};
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("existing")).unwrap();
+        let directory = fs::File::open(root.path()).unwrap();
+
+        create_mountpoint_beneath(&directory, Path::new("existing"), true, false).unwrap();
+        assert!(create_mountpoint_beneath(&directory, Path::new("missing"), true, false).is_err());
+        assert!(!root.path().join("missing").exists());
     }
 
     #[test]
