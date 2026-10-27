@@ -552,6 +552,7 @@ pkgs.testers.runNixOSTest {
       DESKTOP_PYTHON = "${portalPython}/bin/python3"
       BENCHMARK_SCRIPT = "${./benchmark-sandbox.py}"
       PROFILE_SCRIPT = "${./profile-sandbox-startup.py}"
+      NIXPKGS_PATH = "${pkgs.path}"
       NIX_BUILD_CHECK = "${pkgs.writeText "sandbox-nix-build-check.nix" ''
         builtins.derivation {
           name = "sandbox-daemon-proxy-check";

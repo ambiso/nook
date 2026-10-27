@@ -149,6 +149,9 @@ assert guest.guest.uid == 1000 && guest.guest.gid == 100;
 assert lib.elem "XDG_CURRENT_DESKTOP" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "TERM" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "COLORTERM" guest.sandboxes.dev.hostEnvironment;
+assert !(lib.elem "NIX_PATH" guest.sandboxes.dev.hostEnvironment);
+assert lib.elem "NIX_PATH"
+  nixDefaults.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
 assert nixDefaults.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
 assert !nixLogsDisabled.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
 assert lib.elem "CUSTOM_HINT"

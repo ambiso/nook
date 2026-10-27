@@ -276,9 +276,11 @@ SSH askpass program; configure one in the guest only when an application needs
 it.
 
 Nook forwards common desktop identity variables such as
-`XDG_CURRENT_DESKTOP`, along with `TERM` and `COLORTERM`, automatically. Extend
-that allow-list per sandbox when an application needs another value from the
-host session:
+`XDG_CURRENT_DESKTOP`, along with `TERM` and `COLORTERM`, automatically.
+Nix-enabled sandboxes also receive the host's `NIX_PATH`, so legacy expressions
+such as `import <nixpkgs> {}` use the host's configured search path. Extend that
+allow-list per sandbox when an application needs another value from the host
+session:
 
 ```nix
 programs.nook.sandboxes.dev.hostEnvironment = [ "MY_EDITOR_INTEGRATION" ];

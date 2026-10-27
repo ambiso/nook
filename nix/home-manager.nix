@@ -860,7 +860,14 @@ let
         };
       };
       config = {
-        hostEnvironment = lib.mkBefore (desktopEnvironmentVariables ++ terminalEnvironmentVariables);
+        hostEnvironment = lib.mkBefore (
+          desktopEnvironmentVariables
+          ++ terminalEnvironmentVariables
+          # Preserve the caller's flake- or channel-provided search path when
+          # the guest can use Nix. Store paths remain usable through the
+          # guest's read-only host store mount.
+          ++ lib.optional nixEnabled "NIX_PATH"
+        );
         _profile = profile;
         _container = container;
         _appPackage = appPackage;

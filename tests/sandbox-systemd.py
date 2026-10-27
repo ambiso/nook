@@ -20,6 +20,7 @@ def launcher(args):
     return as_owner(
         "WAYLAND_DISPLAY=wayland-test DISPLAY=:77 XDG_CURRENT_DESKTOP=GNOME "
         "TERM=xterm-256color COLORTERM=truecolor "
+        f"NIX_PATH={shlex.quote('nixpkgs=' + NIXPKGS_PATH)} "
         "NOOK_TEST_HOST_ENV=forwarded XAUTHORITY=/home/alice/host.xauth nk " + args
     )
 
@@ -531,6 +532,8 @@ try:
         test "$NOOK_TEST_HOST_ENV" = forwarded
         test "$NOOK_TEST_NIXOS_ENV" = from-nixos
         test "$NOOK_TEST_HOME_ENV" = from-home-manager
+        case "$NIX_PATH" in nixpkgs=/nix/store/*-source) ;; *) exit 1 ;; esac
+        test "$(nix eval --impure --raw --expr '(import <nixpkgs> {}).hello.pname')" = hello
         test "$MOZ_ENABLE_WAYLAND" = 1
         test "$NIX_REMOTE" = daemon
         test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
