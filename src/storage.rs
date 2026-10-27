@@ -66,7 +66,10 @@ pub fn ensure_directory_beneath(root_path: &Path, relative: &Path) -> Result<Pat
 use std::{
     ffi::CStr,
     fs::{self, File, OpenOptions},
-    os::unix::fs::OpenOptionsExt,
+    os::unix::{
+        fs::{OpenOptionsExt, PermissionsExt},
+        io::AsRawFd,
+    },
     path::{Path, PathBuf},
 };
 
@@ -226,8 +229,10 @@ fn visit_entry(directory: impl AsFd, name: &CStr, remove: bool, depth: usize) ->
     .map_err(|error| {
         format!("cannot safely traverse {name:?} (mount points are refused): {error}")
     })?;
-    let is_directory = FileType::from_raw_mode(fstat(&entry)?.st_mode) == FileType::Directory;
+    let metadata = fstat(&entry)?;
+    let is_directory = FileType::from_raw_mode(metadata.st_mode) == FileType::Directory;
     if is_directory {
+        make_directory_removable(&entry, metadata.st_uid, metadata.st_mode)?;
         let child = open_directory(&entry, Path::new("."))?;
         visit(&child, remove, depth + 1)?;
     }
@@ -243,6 +248,29 @@ fn visit_entry(directory: impl AsFd, name: &CStr, remove: bool, depth: usize) ->
             },
         )?;
     }
+    Ok(())
+}
+
+fn make_directory_removable(directory: &OwnedFd, owner: u32, mode: u32) -> Result<()> {
+    let required = Mode::RWXU.bits();
+    if mode & required == required {
+        return Ok(());
+    }
+    if owner != nix::unistd::geteuid().as_raw() {
+        return Err("cannot delete a directory not accessible to the instance owner".into());
+    }
+
+    // Rootless container storage deliberately creates some overlay work
+    // directories with mode 000, and read-only image layers commonly contain
+    // mode 0555 directories. Pinning the inode before changing its mode keeps
+    // a concurrent path replacement from redirecting chmod outside the saved
+    // instance. Linux does not expose fchmodat2(AT_EMPTY_PATH) through rustix,
+    // so use the kernel's procfs reference to that already-open O_PATH fd.
+    let pinned = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    fs::set_permissions(
+        pinned,
+        fs::Permissions::from_mode((mode & 0o7777) | required),
+    )?;
     Ok(())
 }
 
@@ -299,6 +327,28 @@ mod tests {
             "outside data"
         );
         assert!(temporary.path().join("instances/n-other/home").exists());
+    }
+
+    #[test]
+    fn deletion_opens_owner_locked_and_read_only_directories() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = profile(temporary.path());
+        let target = temporary.path().join("instances/n-test");
+        let locked = target.join("home/overlay/work/work");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("private"), "container data").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let read_only = target.join("home/image-layer");
+        fs::create_dir(&read_only).unwrap();
+        fs::write(read_only.join("file"), "image data").unwrap();
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(0o555)).unwrap();
+
+        SavedInstance::open(&profile, "n-test")
+            .unwrap()
+            .remove()
+            .unwrap();
+
+        assert!(!target.exists());
     }
 
     #[test]
