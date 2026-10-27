@@ -58,6 +58,12 @@ let
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
   };
+  reservedStaticEnvironment = evaluate {
+    home-manager.users.alice.programs.nook.sandboxes.dev.environment.HOME = "/tmp/escape";
+  };
+  reservedForwardedEnvironment = evaluate {
+    home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment = [ "DISPLAY" ];
+  };
   staleNook = pkgs.writeShellScriptBin "nk" "exit 99";
   stalePackageSet = pkgs.extend (_: _: { nook = staleNook; });
   stalePackageDefault =
@@ -121,20 +127,8 @@ let
       { environment.variables.GDK_DEBUG = null; }
     ];
   };
-  literalCursorPaths = "/literal/$HOMELESS/icons:/literal/$USERNAME/icons:/literal/$XDG_STATE_HOME_EXTRA/icons:/literal/\${HOMELESS}/icons";
-  literalCursor = appearanceGuest {
-    environment.XCURSOR_PATH = literalCursorPaths;
-  };
   disabledAppearance = automatic.home-manager.users.alice.programs.nook.sandboxes.dev._container;
-  sessionValueReachesApplications =
-    guest: name: value:
-    guest.systemd.globalEnvironment.${name} == value
-    && lib.elem (builtins.toJSON "${name}=${lib.replaceStrings [ "%" ] [ "%%" ] value}") guest.systemd.user.settings.Manager.DefaultEnvironment;
-  cursorPaths = guest: lib.splitString ":" guest.systemd.globalEnvironment.XCURSOR_PATH;
-  themeReachesApplications =
-    guest: theme:
-    guest.environment.variables.QT_QPA_PLATFORMTHEME == theme
-    && sessionValueReachesApplications guest "QT_QPA_PLATFORMTHEME" theme;
+  themeReachesApplications = guest: theme: guest.environment.variables.QT_QPA_PLATFORMTHEME == theme;
   service = "sandbox-ualice-dev@";
   guest = automatic.home-manager.users.alice.programs.nook;
 in
@@ -143,6 +137,12 @@ in
 assert lib.any (
   a: !a.assertion && lib.hasInfix "resolved at launch" a.message
 ) removedOverride.home-manager.users.alice.assertions;
+assert lib.any (
+  a: !a.assertion && lib.hasInfix "cannot set Nook runtime variables: HOME" a.message
+) reservedStaticEnvironment.home-manager.users.alice.assertions;
+assert lib.any (
+  a: !a.assertion && lib.hasInfix "cannot forward Nook runtime variables: DISPLAY" a.message
+) reservedForwardedEnvironment.home-manager.users.alice.assertions;
 assert automatic.users.users.alice.uid == null;
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
@@ -164,38 +164,18 @@ assert themeReachesApplications explicitTheme "custom";
 assert lib.all (
   name:
   configuredPreferences.environment.variables.${name} == preferenceOverrides.${name}
-  && sessionValueReachesApplications configuredPreferences name preferenceOverrides.${name}
-  && sessionValueReachesApplications profilePreferences name preferenceOverrides.${name}
+  && profilePreferences.environment.variables.${name} == preferenceOverrides.${name}
 ) (builtins.attrNames preferenceOverrides);
 assert !configuredPreferences.fonts.fontconfig.enable;
 assert portalTheme.fonts.fontconfig.enable;
 assert lib.elem pkgs.adwaita-fonts portalTheme.fonts.packages;
 assert !(unsetPreferences.environment.variables ? GDK_DEBUG);
-assert !(unsetPreferences.systemd.globalEnvironment ? GDK_DEBUG);
+assert !(disabledAppearance.environment.variables ? GDK_DEBUG);
+assert !(disabledAppearance.environment.variables ? GTK_USE_PORTAL);
+assert profilePreferences.environment.variables.XCURSOR_PATH == "/preferred/icons:/more/icons";
 assert
-  !lib.any (lib.hasPrefix ''"GDK_DEBUG='') unsetPreferences.systemd.user.settings.Manager.DefaultEnvironment;
-assert !(disabledAppearance.systemd.globalEnvironment ? GDK_DEBUG);
-assert !(disabledAppearance.systemd.globalEnvironment ? GTK_USE_PORTAL);
-assert lib.hasPrefix "/home/alice/.icons:/home/alice/.local/share/icons:"
-  portalTheme.systemd.globalEnvironment.XCURSOR_PATH;
-assert lib.elem "/run/current-system/sw/share/icons" (cursorPaths portalTheme);
-assert lib.elem "/home/alice/.nix-profile/share/icons" (cursorPaths portalTheme);
-assert lib.elem "/home/alice/.local/state/nix/profile/share/icons" (cursorPaths portalTheme);
-assert lib.elem "/etc/profiles/per-user/alice/share/icons" (cursorPaths portalTheme);
-assert lib.hasPrefix "/custom/100%/icons:"
-  configuredPreferences.systemd.globalEnvironment.XCURSOR_PATH;
-assert lib.elem "/run/current-system/sw/custom-cursors" (cursorPaths configuredPreferences);
-assert lib.elem "/home/alice/state/alice/nix/profile/custom-cursors" (
-  cursorPaths configuredPreferences
-);
-assert sessionValueReachesApplications configuredPreferences "XCURSOR_PATH"
-  configuredPreferences.systemd.globalEnvironment.XCURSOR_PATH;
-assert lib.hasPrefix "/preferred/icons:/more/icons:/home/alice/.icons:"
-  profilePreferences.systemd.globalEnvironment.XCURSOR_PATH;
-assert sessionValueReachesApplications profilePreferences "XCURSOR_PATH"
-  profilePreferences.systemd.globalEnvironment.XCURSOR_PATH;
-assert !lib.hasInfix "$" portalTheme.systemd.globalEnvironment.XCURSOR_PATH;
-assert lib.hasPrefix "${literalCursorPaths}:" literalCursor.systemd.globalEnvironment.XCURSOR_PATH;
+  configuredPreferences.environment.etc
+    ? "systemd/user-environment-generators/20-nook-session-environment";
 assert guest.sandboxes.dev._container.networking.hostName == "";
 assert !(guest.sandboxes.dev._container.environment.etc ? hostname);
 assert

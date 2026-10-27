@@ -2,7 +2,7 @@
 """Check cursor discovery in real systemd services without an X11 server.
 
 Run inside a dev sandbox. The JSON input is the guest's evaluated
-systemd.globalEnvironment. Bubblewrap supplies a disposable home containing a
+environment.variables. Bubblewrap supplies a disposable home containing a
 cursor theme, so the test does not change the user's real theme or home files.
 """
 
@@ -41,7 +41,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("library", help="Path to libXcursor.so.1")
     parser.add_argument("cursor_file", help="An installed Xcursor-format cursor")
-    parser.add_argument("environment", help="Evaluated systemd.globalEnvironment JSON")
+    parser.add_argument("environment", help="Evaluated environment.variables JSON")
     parser.add_argument("--bubblewrap", default="bwrap")
     args = parser.parse_args()
     environment = json.loads(Path(args.environment).read_text())

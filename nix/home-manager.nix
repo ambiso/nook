@@ -26,6 +26,20 @@ let
     "TERM"
     "COLORTERM"
   ];
+  runtimeEnvironmentVariables = [
+    "HOME"
+    "USER"
+    "LOGNAME"
+    "XDG_RUNTIME_DIR"
+    "PATH"
+    "SHELL"
+    "WAYLAND_DISPLAY"
+    "DISPLAY"
+    "XAUTHORITY"
+    "DBUS_SESSION_BUS_ADDRESS"
+    "DBUS_SYSTEM_BUS_ADDRESS"
+    "NOOK_FORWARDED_ENVIRONMENT"
+  ];
   resourceLimitNames = [
     "CPU"
     "FSIZE"
@@ -256,8 +270,52 @@ let
           ]
           ++ lib.optionals (hm != null) hm.home.packages;
       };
+      # NixOS and Home Manager already generate the shell fragments that define
+      # a normal login environment. Use those as the canonical representation
+      # instead of maintaining a second list of recognized variable names.
+      sessionLoader = pkgs.writeShellScript "nook-load-session-environment-${name}" ''
+        nook_restore_nounset=
+        case $- in *u*) nook_restore_nounset=1; set +u ;; esac
+
+        export HOME=${lib.escapeShellArg home}
+        export USER=${lib.escapeShellArg username}
+        export LOGNAME=${lib.escapeShellArg username}
+        export XDG_RUNTIME_DIR=/run/user/${toString uid}
+        export XDG_STATE_HOME="''${XDG_STATE_HOME:-$HOME/.local/state}"
+
+        . /etc/set-environment
+        ${lib.optionalString (hm != null) ''
+          . ${hm.home.sessionVariablesPackage}/etc/profile.d/hm-session-vars.sh
+        ''}
+
+        if [ -n "$nook_restore_nounset" ]; then set -u; fi
+        unset nook_restore_nounset
+      '';
+      # The user manager runs environment generators before any units. Start
+      # from a clean environment so host or supervisor variables cannot become
+      # ambient authority inside guest services, then print shell-quoted values
+      # in systemd.environment-generator(7) format.
+      sessionEnvironmentGenerator = pkgs.writeShellScript "nook-session-environment-generator-${name}" ''
+        exec ${pkgs.coreutils}/bin/env -i \
+          ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg ''
+                        . ${sessionLoader}
+                        exec ${pkgs.python3}/bin/python3 - <<'PY'
+            import os
+            import re
+            import shlex
+
+            ignored = {"OLDPWD", "PWD", "SHLVL", "_"}
+            for variable, value in sorted(os.environ.items()):
+                if variable in ignored or variable.startswith("__"):
+                    continue
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+                    print(f"{variable}={shlex.quote(value)}")
+            PY
+          ''}
+      '';
       activation = pkgs.writeShellScript "sandbox-activate-${name}" ''
         set -eu
+        . ${sessionLoader}
         status=$(${pkgs.systemd}/bin/systemctl --user is-system-running --wait || true)
         case "$status" in running|degraded) ;; *) echo "User manager failed: $status" >&2; exit 1 ;; esac
         ${lib.optionalString cfg.portals "${pkgs.systemd}/bin/systemctl --user start sandbox-portals.service"}
@@ -338,15 +396,33 @@ let
       '';
       entry = pkgs.writeShellScript "sandbox-command-${name}" ''
         set -eu
-        # Entry is dispatched by the trusted guest user manager. Export the
-        # evaluated guest session environment here as well, so applications do
-        # not depend on client environment forwarding or manager import state.
-        ${lib.concatStringsSep "\n" (
-          lib.mapAttrsToList (
-            name: value: "export ${name}=${lib.escapeShellArg (toString value)}"
-          ) container.systemd.globalEnvironment
-        )}
+
+        # Preserve only values explicitly forwarded by the trusted entry
+        # helper. Static NixOS/Home Manager values are loaded next, forwarded
+        # caller values override them, and Nook's runtime invariants win last.
+        forwarded_names=()
+        forwarded_values=()
+        IFS=: read -r -a requested_names <<< "''${NOOK_FORWARDED_ENVIRONMENT:-}"
+        for variable in "''${requested_names[@]}"; do
+          case "$variable" in
+            ""|*[!A-Za-z0-9_]*) continue ;;
+          esac
+          if [[ -v $variable ]]; then
+            forwarded_names+=("$variable")
+            forwarded_values+=("''${!variable}")
+          fi
+        done
+
+        . ${sessionLoader}
+
+        for ((index = 0; index < ''${#forwarded_names[@]}; index++)); do
+          export "''${forwarded_names[index]}=''${forwarded_values[index]}"
+        done
+        unset NOOK_FORWARDED_ENVIRONMENT
+
         export HOME=${lib.escapeShellArg home}
+        export USER=${lib.escapeShellArg username}
+        export LOGNAME=${lib.escapeShellArg username}
         export XDG_RUNTIME_DIR=/run/user/${toString uid}
         export PATH=${sessionTools}/bin:/run/wrappers/bin:${appPackage}/bin:/run/current-system/sw/bin
         export SHELL=${appPackage}/bin/${shell}
@@ -395,6 +471,8 @@ let
               home
               appPackage
               sessionTools
+              sessionLoader
+              sessionEnvironmentGenerator
               activation
               ;
             inherit shellPackage;
@@ -411,7 +489,6 @@ let
             inherit resourceLimits;
             inherit hostTimeZone;
             inherit launcher;
-            inherit nixEnabled;
           };
           modules = [ ./container.nix ] ++ cfg.nixosModules;
         }).config;
@@ -528,6 +605,8 @@ let
         touch "$out/root/etc/machine-id"
         ln -s ${manifest} "$out/profile"
         ln -s ${mountFile} "$out/mounts"
+        # Older launchers read this file. Current commands get the same values
+        # through NixOS's evaluated /etc/set-environment instead.
         ln -s ${pkgs.writeText "sandbox-environment" (textPairs cfg.environment)} "$out/environment"
         ln -s ${pkgs.writeText "sandbox-host-environment" (lib.concatStringsSep "\n" (lib.unique cfg.hostEnvironment))} "$out/host-environment"
         ln -s ${pkgs.writeText "session-bus-rules" (lib.concatStringsSep "\n" (lib.unique sessionRules))} "$out/session-rules"
@@ -944,10 +1023,31 @@ in
   config = lib.mkMerge [
     { programs.nook.profiles = catalog; }
     (lib.mkIf outer.enable {
-      assertions = lib.mapAttrsToList (name: _: {
-        assertion = builtins.match "[a-z0-9][a-z0-9-]{0,23}" name != null;
-        message = "Sandbox names must be at most 24 lowercase letters, digits, or hyphens.";
-      }) cfg;
+      assertions = lib.concatLists (
+        lib.mapAttrsToList (
+          name: sandbox:
+          let
+            staticConflicts = lib.intersectLists runtimeEnvironmentVariables (
+              builtins.attrNames sandbox.environment
+            );
+            forwardedConflicts = lib.intersectLists runtimeEnvironmentVariables sandbox.hostEnvironment;
+          in
+          [
+            {
+              assertion = builtins.match "[a-z0-9][a-z0-9-]{0,23}" name != null;
+              message = "Sandbox names must be at most 24 lowercase letters, digits, or hyphens.";
+            }
+            {
+              assertion = staticConflicts == [ ];
+              message = "programs.nook.sandboxes.${name}.environment cannot set Nook runtime variables: ${lib.concatStringsSep ", " staticConflicts}";
+            }
+            {
+              assertion = forwardedConflicts == [ ];
+              message = "programs.nook.sandboxes.${name}.hostEnvironment cannot forward Nook runtime variables: ${lib.concatStringsSep ", " forwardedConflicts}";
+            }
+          ]
+        ) cfg
+      );
       home.packages = lib.mkIf (cfg != { }) [ wrapper ];
       # GNOME watches the user applications directory. Link each entry there
       # through Home Manager so activating a new Nix profile also produces a

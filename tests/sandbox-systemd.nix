@@ -336,6 +336,7 @@ pkgs.testers.runNixOSTest {
         stateDirectory = ".sandbox/check";
         hostEnvironment = [ "NOOK_TEST_HOST_ENV" ];
         environment.NOOK_TEST_REVISION = "original";
+        environment.NOOK_TEST_HOST_ENV = "static";
         imports = [
           { environment.SANDBOX_PROFILE_IMPORT = "applied"; }
         ];
@@ -369,9 +370,7 @@ pkgs.testers.runNixOSTest {
         nix = true;
         nixosModules = [
           {
-            # Nook does not choose a graphical askpass implementation, but a
-            # guest module may override NixOS's empty default.
-            environment.variables.SSH_ASKPASS = pkgs.lib.mkForce "/custom/ssh-askpass";
+            environment.variables.NOOK_TEST_NIXOS_ENV = "from-nixos";
             networking.hosts = {
               "127.0.0.1" = [ "project.test" ];
               "::1" = [ "project.test" ];
@@ -451,6 +450,7 @@ pkgs.testers.runNixOSTest {
         };
         homeManagerModules = [
           {
+            home.sessionVariables.NOOK_TEST_HOME_ENV = "from-home-manager";
             programs.ssh = {
               enable = true;
               enableDefaultConfig = false;
@@ -474,6 +474,20 @@ pkgs.testers.runNixOSTest {
                 '';
                 ExecStart = "${pkgs.postgresql}/bin/postgres -D %h/pgdata -k %t -c listen_addresses=''";
                 KillSignal = "SIGINT";
+              };
+              Install.WantedBy = [ "default.target" ];
+            };
+            systemd.user.services.session-environment-check = {
+              Unit.Description = "Check generated sandbox session environment";
+              Service = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                ExecStart = pkgs.writeShellScript "check-session-environment" ''
+                  set -eu
+                  test "$NOOK_TEST_NIXOS_ENV" = from-nixos
+                  test "$NOOK_TEST_HOME_ENV" = from-home-manager
+                  touch "$XDG_RUNTIME_DIR/nook-session-environment-ok"
+                '';
               };
               Install.WantedBy = [ "default.target" ];
             };

@@ -497,6 +497,10 @@ try:
 
     result = inside("""
         systemctl --user is-active --quiet postgres.service
+        systemctl --user is-active --quiet session-environment-check.service
+        test -e "$XDG_RUNTIME_DIR/nook-session-environment-ok"
+        systemctl --user show-environment | grep -Fx NOOK_TEST_NIXOS_ENV=from-nixos
+        systemctl --user show-environment | grep -Fx NOOK_TEST_HOME_ENV=from-home-manager
         for i in {1..100}; do
             pg_isready -q -h "$XDG_RUNTIME_DIR" && break
             sleep .1
@@ -504,12 +508,13 @@ try:
         psql -h "$XDG_RUNTIME_DIR" -d postgres -Atc 'SELECT 42'
     """)
     assert "42" in result
-    # GUI backend selection comes from the trusted guest profile even if the
-    # long-lived user manager no longer carries its initial environment.
+    # Commands reload the evaluated guest environment even if the long-lived
+    # user manager no longer carries its initial values. Explicitly forwarded
+    # host values then take precedence over static guest values.
     inside(
         "systemctl --user unset-environment "
         "NIXOS_OZONE_WL QT_QPA_PLATFORM MOZ_ENABLE_WAYLAND XDG_SESSION_TYPE "
-        "SSH_ASKPASS"
+        "NOOK_TEST_NIXOS_ENV NOOK_TEST_HOME_ENV"
     )
     inside("""
         touch ~/persistent
@@ -524,7 +529,8 @@ try:
         test "$TERM" = xterm-256color
         test "$COLORTERM" = truecolor
         test "$NOOK_TEST_HOST_ENV" = forwarded
-        test "$SSH_ASKPASS" = /custom/ssh-askpass
+        test "$NOOK_TEST_NIXOS_ENV" = from-nixos
+        test "$NOOK_TEST_HOME_ENV" = from-home-manager
         test "$MOZ_ENABLE_WAYLAND" = 1
         test "$NIX_REMOTE" = daemon
         test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
@@ -542,14 +548,15 @@ try:
         test ! -r /dev/kmsg
     """)
     # Interactive shell initialization must retain Nook's command wrappers and
-    # trusted session values after NixOS initializes its normal shell profile.
+    # the evaluated guest session values.
     inside("""
         bash -ic '
           case $(command -v systemctl) in
             *sandbox-session-tools/bin/systemctl) ;;
             *) exit 1 ;;
           esac
-          test "$SSH_ASKPASS" = /custom/ssh-askpass
+          test "$NOOK_TEST_NIXOS_ENV" = from-nixos
+          test "$NOOK_TEST_HOME_ENV" = from-home-manager
           test "$NIX_REMOTE" = daemon
           test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
         '

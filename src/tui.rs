@@ -174,10 +174,7 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                         {
                             let choice = &input.choice;
-                            match delete_instance(
-                                &profiles[choice.profile],
-                                &choice.instance,
-                            ) {
+                            match delete_instance(&profiles[choice.profile], &choice.instance) {
                                 Ok(()) => {
                                     deletion = None;
                                     entries = choices(profiles)?;

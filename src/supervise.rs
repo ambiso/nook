@@ -91,8 +91,8 @@ fn instance_lock(profile: &Profile, instance: &str) -> Result<File> {
 }
 
 fn instance_lock_at(directory: &Path, instance: &str, expected_owner: u32) -> Result<File> {
-    fs::create_dir_all(&directory)?;
-    let metadata = fs::symlink_metadata(&directory)?;
+    fs::create_dir_all(directory)?;
+    let metadata = fs::symlink_metadata(directory)?;
     if !metadata.is_dir()
         || metadata.uid() != expected_owner
         || metadata.permissions().mode() & 0o022 != 0
@@ -1838,6 +1838,17 @@ pub fn enter(
     } else {
         "--pipe"
     });
+    if !host_environment.is_empty() {
+        let names = host_environment
+            .iter()
+            .filter_map(|assignment| assignment.split_once('=').map(|(name, _)| name))
+            .collect::<Vec<_>>()
+            .join(":");
+        // The guest entry script reloads its static NixOS/Home Manager
+        // environment. Tell it exactly which already-validated values came
+        // from the caller so those explicit values can be restored afterward.
+        run.arg(format!("--setenv=NOOK_FORWARDED_ENVIRONMENT={names}"));
+    }
     for assignment in host_environment {
         run.arg(format!("--setenv={assignment}"));
     }
@@ -1962,7 +1973,9 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_completed_reload_failure, instance_lock_at, owner_id_mappings, uid_range_at};
+    use super::{
+        clear_completed_reload_failure, instance_lock_at, owner_id_mappings, uid_range_at,
+    };
     use std::{fs, path::Path};
 
     #[test]

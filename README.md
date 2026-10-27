@@ -253,14 +253,27 @@ programs.nook.sandboxes.dev.nixosModules = [
 ```
 
 Cursor lookup includes the guest's `~/.icons`, `~/.local/share/icons`, and NixOS
-profile icon directories. Setting a profile's `environment.XCURSOR_PATH` adds
-preferred directories before those fallbacks. Guest Qt and cursor settings also
+profile icon directories. Use NixOS's list-valued
+`environment.sessionVariables.XCURSOR_PATH` option, as above, to add search
+directories while retaining those defaults. Guest Qt and cursor settings also
 reach apps launched as transient systemd services.
-Cursor search paths expand `$HOME`, `$USER`, and `$XDG_STATE_HOME` (also in
-`${…}` form) for that guest. Other variable names remain literal; shell commands
-and parameter expressions are not evaluated.
 Portal environment flags control application behavior; the profile's `portals`
 option controls whether Nook grants portal access.
+
+Nook uses the guest NixOS and Home Manager evaluations as the source of its
+static environment. Both `environment.variables` in `nixosModules` and
+`home.sessionVariables` in `homeManagerModules` apply to interactive commands
+and systemd user services. The profile-level `environment` option is a short
+form for simple NixOS environment values:
+
+```nix
+programs.nook.sandboxes.dev.environment.EDITOR = "nvim";
+```
+
+Static environment values are part of the world-readable Nix store. Keep keys,
+tokens, and other secrets out of all three settings. Nook does not select an
+SSH askpass program; configure one in the guest only when an application needs
+it.
 
 Nook forwards common desktop identity variables such as
 `XDG_CURRENT_DESKTOP`, along with `TERM` and `COLORTERM`, automatically. Extend
@@ -272,8 +285,11 @@ programs.nook.sandboxes.dev.hostEnvironment = [ "MY_EDITOR_INTEGRATION" ];
 ```
 
 The current value is passed only when launching a command and is not stored in
-the Nix store. Guest `environment` and NixOS environment settings still define
-the final value seen by the application.
+the Nix store. An explicitly forwarded value overrides a static NixOS or Home
+Manager value for that command. Nook then sets the identity, runtime directory,
+command path, display sockets, and D-Bus addresses required to enter the
+sandbox. Those runtime variables cannot be configured through `environment` or
+`hostEnvironment`; use the corresponding Nook options instead.
 
 ## Use
 

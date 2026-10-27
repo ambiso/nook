@@ -14,9 +14,25 @@ pub fn valid_environment_name(name: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+pub const RUNTIME_ENVIRONMENT_NAMES: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "XDG_RUNTIME_DIR",
+    "PATH",
+    "SHELL",
+    "WAYLAND_DISPLAY",
+    "DISPLAY",
+    "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DBUS_SYSTEM_BUS_ADDRESS",
+    "NOOK_FORWARDED_ENVIRONMENT",
+];
+
 pub fn valid_forwarded_environment_assignment(assignment: &str, allowed_names: &[String]) -> bool {
     assignment.split_once('=').is_some_and(|(name, value)| {
         valid_environment_name(name)
+            && !RUNTIME_ENVIRONMENT_NAMES.contains(&name)
             && allowed_names.iter().any(|allowed| allowed == name)
             && !value.is_empty()
             && value.len() <= 1024
@@ -29,7 +45,6 @@ pub struct Profile {
     pub dir: PathBuf,
     pub values: BTreeMap<String, String>,
     pub mounts: Vec<Mount>,
-    pub environment: BTreeMap<String, String>,
     pub host_environment: Vec<String>,
     pub session_rules: Vec<String>,
     pub system_rules: Vec<String>,
@@ -465,7 +480,6 @@ impl Profile {
             dir: dir.into(),
             values,
             mounts,
-            environment: pairs(&dir.join("environment"))?,
             host_environment: optional_lines(&dir.join("host-environment"))?,
             session_rules: lines(&dir.join("session-rules"))?,
             system_rules: lines(&dir.join("system-rules"))?,
@@ -487,24 +501,6 @@ impl Profile {
             return Err(
                 "owner IDs must be non-root; guest UID/GID must be between 1 and 99999".into(),
             );
-        }
-        for key in p.environment.keys() {
-            if !key
-                .bytes()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
-                || [
-                    "DISPLAY",
-                    "XAUTHORITY",
-                    "DBUS_SESSION_BUS_ADDRESS",
-                    "DBUS_SYSTEM_BUS_ADDRESS",
-                    "WAYLAND_DISPLAY",
-                    "XDG_RUNTIME_DIR",
-                    "HOME",
-                ]
-                .contains(&key.as_str())
-            {
-                return Err(format!("reserved or invalid environment variable {key}").into());
-            }
         }
         if p.host_environment
             .iter()
@@ -671,7 +667,6 @@ mod tests {
                 ),
             ]),
             mounts: Vec::new(),
-            environment: BTreeMap::new(),
             host_environment: Vec::new(),
             session_rules: Vec::new(),
             system_rules: Vec::new(),
@@ -886,7 +881,15 @@ mod tests {
 
     #[test]
     fn forwarded_environment_requires_a_profile_allow_list() {
-        let allowed = vec!["XDG_CURRENT_DESKTOP".to_owned(), "CUSTOM_HINT".to_owned()];
+        let allowed = [
+            "XDG_CURRENT_DESKTOP",
+            "CUSTOM_HINT",
+            "PATH",
+            "DISPLAY",
+            "NOOK_FORWARDED_ENVIRONMENT",
+        ]
+        .map(str::to_owned)
+        .to_vec();
         for assignment in ["XDG_CURRENT_DESKTOP=GNOME:GNOME", "CUSTOM_HINT=enabled"] {
             assert!(valid_forwarded_environment_assignment(assignment, &allowed));
         }
@@ -894,6 +897,7 @@ mod tests {
             "PATH=/host/bin",
             "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
             "DISPLAY=:0",
+            "NOOK_FORWARDED_ENVIRONMENT=PATH",
             "XDG_CURRENT_DESKTOP=",
             "XDG_CURRENT_DESKTOP=GNOME\nPATH=/host/bin",
         ] {

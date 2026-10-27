@@ -9,6 +9,8 @@
   shellPackage,
   appPackage,
   sessionTools,
+  sessionLoader,
+  sessionEnvironmentGenerator,
   activation,
   environment,
   startX,
@@ -21,7 +23,6 @@
   devicePatterns,
   resourceLimits,
   hostTimeZone,
-  nixEnabled,
   ...
 }:
 let
@@ -57,81 +58,6 @@ let
       "/run/current-system/sw/share"
     ];
   };
-  sessionVariableNames =
-    builtins.attrNames (
-      backendDefaults // appearanceDefaults // portalDefaults // requiredEnvironment // environment
-    )
-    ++ [
-      "QT_STYLE_OVERRIDE"
-      "XCURSOR_THEME"
-      "XCURSOR_SIZE"
-      "SSH_ASKPASS"
-    ];
-  # Login shells expand these NixOS profile placeholders; systemd manager
-  # environments do not. Resolve the known user paths without evaluating shell
-  # code, retaining the standard home and profile cursor directories.
-  expandVariables =
-    variables: value:
-    lib.concatMapStrings (
-      part:
-      if builtins.isList part then
-        let
-          token = builtins.head part;
-        in
-        variables.${token} or token
-      else
-        part
-    ) (builtins.split "([$][{][A-Za-z_][A-Za-z0-9_]*[}]|[$][A-Za-z_][A-Za-z0-9_]*)" value);
-  # Match complete variable names: replacing "$HOME" as a substring would
-  # corrupt unrelated names such as "$HOMELESS". Unknown names stay literal.
-  userVariables = {
-    "$HOME" = home;
-    "\${HOME}" = home;
-    "$USER" = username;
-    "\${USER}" = username;
-  };
-  stateHome = expandVariables userVariables (
-    config.environment.variables.XDG_STATE_HOME or "${home}/.local/state"
-  );
-  expandUserPaths = expandVariables (
-    userVariables
-    // {
-      "$XDG_STATE_HOME" = stateHome;
-      "\${XDG_STATE_HOME}" = stateHome;
-    }
-  );
-  # NixOS normally adds these while sourcing /etc/profile. Nook commands are
-  # transient user services and deliberately do not source shell startup
-  # files, so provide the same values to every command. This matters for GUI
-  # launchers and scripts just as much as it does for interactive shells.
-  standardCommandEnvironment = lib.filterAttrs (_: value: value != null) (
-    {
-      NIXPKGS_CONFIG = config.environment.variables.NIXPKGS_CONFIG;
-      NIX_USER_PROFILE_DIR = "/nix/var/nix/profiles/per-user/${username}";
-      NIX_PROFILES = lib.concatStringsSep " " (
-        map expandUserPaths (lib.reverseList config.environment.profiles)
-      );
-    }
-    // lib.optionalAttrs nixEnabled {
-      NIX_REMOTE = config.environment.variables.NIX_REMOTE;
-    }
-  );
-  cursorSuffixes = config.environment.profileRelativeEnvVars.XCURSOR_PATH or [ ];
-  cursorPath = expandUserPaths (
-    lib.concatStringsSep ":" (
-      lib.optional (config.environment.variables ? XCURSOR_PATH) config.environment.variables.XCURSOR_PATH
-      ++ lib.concatMap (
-        profile: map (suffix: "${profile}${suffix}") cursorSuffixes
-      ) config.environment.profiles
-    )
-  );
-  # Read the final option values for both manager environments. This also
-  # respects variables explicitly unset with null in a guest module.
-  sessionEnvironment =
-    lib.filterAttrs (name: _: lib.elem name sessionVariableNames) config.environment.variables
-    // standardCommandEnvironment
-    // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; };
-
 in
 {
   boot.isContainer = true;
@@ -252,36 +178,25 @@ in
   environment.variables =
     lib.mapAttrs (_: lib.mkDefault) applicationDefaults
     // requiredEnvironment
-    // builtins.removeAttrs environment [ "XCURSOR_PATH" ];
-  # Cursor paths are lists in NixOS. Treat a profile's explicit search path as
-  # preferred directories, while keeping the usual home/profile fallbacks.
-  environment.sessionVariables = lib.optionalAttrs (environment ? XCURSOR_PATH) {
-    XCURSOR_PATH = lib.mkBefore (lib.splitString ":" environment.XCURSOR_PATH);
-  };
-  # Bash sources the generated NixOS environment when started interactively,
-  # replacing the wrapper-first PATH and values supplied by Nook's command
-  # entrypoint. Restore them after normal shell initialization. This also
-  # applies to other shells enabled by guest modules.
+    # The profile shorthand is an explicit override of ordinary NixOS
+    # defaults. A guest module can still replace it deliberately with mkForce.
+    // lib.mapAttrs (_: lib.mkOverride 90) environment;
+  # Shell startup may rebuild PATH even though the command boundary already
+  # loaded the evaluated NixOS and Home Manager environments. Keep Nook's
+  # wrappers and selected application packages first.
   environment.shellInit = lib.mkAfter ''
     case ":$PATH:" in
       *":${sessionTools}/bin:"*) ;;
       *) export PATH=${sessionTools}/bin:${appPackage}/bin:$PATH ;;
     esac
-    ${lib.concatStringsSep "\n" (
-      lib.mapAttrsToList (
-        name: value: "export ${name}=${lib.escapeShellArg (toString value)}"
-      ) sessionEnvironment
-    )}
   '';
-  # Entries run as transient user services without sourcing /etc/profile.
-  # Seed the user manager's inherited environment as well as login shells.
-  systemd.globalEnvironment = sessionEnvironment;
-  # PAM supplies its own XDG defaults when user@ starts. Set the user
-  # manager's defaults explicitly as well, so transient services retain the
-  # guest's schema/icon paths. Use NixOS's usual JSON quoting for unit values.
-  systemd.user.settings.Manager.DefaultEnvironment = lib.mapAttrsToList (
-    name: value: builtins.toJSON "${name}=${lib.replaceStrings [ "%" ] [ "%%" ] value}"
-  ) sessionEnvironment;
+  # Seed the user manager before it starts units. The same loader is sourced by
+  # every Nook command, so a compatible live reload does not leave new commands
+  # with the manager's older environment.
+  environment.etc."systemd/user-environment-generators/20-nook-session-environment" = {
+    source = sessionEnvironmentGenerator;
+    mode = "0755";
+  };
   virtualisation.podman.enable = podman;
   nix.settings.experimental-features = [
     "nix-command"

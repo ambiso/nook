@@ -66,10 +66,7 @@ pub fn ensure_directory_beneath(root_path: &Path, relative: &Path) -> Result<Pat
 use std::{
     ffi::CStr,
     fs::{self, File},
-    os::unix::{
-        fs::PermissionsExt,
-        io::AsRawFd,
-    },
+    os::unix::{fs::PermissionsExt, io::AsRawFd},
     path::{Path, PathBuf},
 };
 
@@ -288,7 +285,6 @@ mod tests {
                 ("state".into(), state.to_string_lossy().into_owned()),
             ]),
             mounts: vec![],
-            environment: BTreeMap::new(),
             host_environment: vec![],
             session_rules: vec![],
             system_rules: vec![],

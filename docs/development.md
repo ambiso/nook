@@ -42,17 +42,16 @@ an empty service registry reproduces `ServiceUnknown`, and registering dconf's
 service allows theme, icon, and color-scheme writes to persist in a disposable
 home. Module assertions cover the guest D-Bus/systemd registration.
 
-The preference/cursor change has Nix assertions for module and profile overrides,
-unset variables, cursor ordering, user/state path expansion, and systemd quoting.
-The cursor smoke test also ran inside dev using real transient systemd services
-and libXcursor, with a disposable home in bubblewrap. The old single-directory
-path and an unexpanded `$HOME` path both fail to find the fixture cursor; the
-evaluated NixOS search path finds it. The full VM run also verified cursor paths
-in a booted Nook guest.
+The preference/cursor behavior has Nix assertions for module and profile
+overrides and unset variables. The cursor smoke test also ran inside dev using
+real transient systemd services and libXcursor, with a disposable home in
+bubblewrap. A single theme directory and an unexpanded `$HOME` path both fail
+to find the fixture cursor; the evaluated NixOS search path finds it. The full
+VM run also verified cursor paths in a booted Nook guest.
 
 To repeat that focused runtime check, supply a libXcursor library, an installed
 Xcursor-format file (such as Adwaita's `cursors/left_ptr`), and JSON containing
-your guest's evaluated `systemd.globalEnvironment`. The guest home in that
+your guest's evaluated `environment.variables`. The guest home in that
 configuration must match the user running the test:
 
 ```sh

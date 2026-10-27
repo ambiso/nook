@@ -168,10 +168,7 @@ fn prepare_deletion(profile: &Profile, instance: &str) -> Result<storage::SavedI
     Ok(saved)
 }
 
-fn delete_instance(
-    profile: &Profile,
-    instance: &str,
-) -> Result<()> {
+fn delete_instance(profile: &Profile, instance: &str) -> Result<()> {
     require_stopped(profile, instance)?;
     let expected_profile = fs::canonicalize(&profile.dir)?;
     let status = Command::new("/run/wrappers/bin/pkexec")

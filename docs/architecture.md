@@ -124,6 +124,15 @@ credentials. The unprivileged portal helpers remain in `nk`. The Nix broker
 uses Nix's own daemon implementation and both kinds of helper run with the
 sandbox owner's credentials.
 
+NixOS's `/etc/set-environment` and Home Manager's generated session-variable
+fragment are the canonical static command environment. A systemd user
+environment generator evaluates the same fragments from an empty environment
+before the guest user manager starts. Entry commands evaluate them again so a
+compatible live reload takes effect without restarting the manager. Values
+explicitly allow-listed with `hostEnvironment` override those static values for
+one command; Nook applies its required identity, path, display, and bus values
+last. Static values are Nix store content and must not contain secrets.
+
 Shell and command launches translate the host's physical current directory
 when it lies within the selected instance's backing home. Symlink aliases work;
 paths outside that home fall back to the guest home. GUI entry points start at
@@ -177,8 +186,8 @@ sockets are excluded. `startX = true` starts a private
 [`xwayland-satellite`](https://github.com/Supreeeme/xwayland-satellite) for
 applications needing X11; guest `:0` refers to that server. Separate network
 namespaces also keep host abstract X11 sockets out of reach.
-OpenSSH uses a guest-provided askpass helper for FIDO touch and PIN prompts,
-rather than its absent compile-time `libexec/ssh-askpass` path.
+Nook does not select an SSH askpass implementation. OpenSSH therefore uses its
+normal guest configuration and fallback behavior.
 
 The direct Wayland connection exposes every global that the host compositor
 offers to that connection. This includes ordinary clipboard protocols: a GUI
@@ -295,11 +304,12 @@ machine is `sbx-<uid>-<profile>-<instance>`. Activation output is copied into th
 host unit's journal so errors remain available when a failed guest root is
 removed.
 
-The separate `nook-root` entry helper accepts only a bounded profile name, resolves it through the
-authenticated caller's root-managed profile registry, and then verifies the immutable profile and
-caller's UID before entering its namespaces. It does not forward the caller's environment. It runs commands as the guest
-owner through that guest's user manager. Permission to join does not authorize
-other root helper modes.
+The separate `nook-root` entry helper accepts only a bounded profile name,
+resolves it through the authenticated caller's root-managed profile registry,
+and then verifies the immutable profile and caller's UID before entering its
+namespaces. It forwards only environment variables explicitly allowed by the
+installed profile and runs commands as the guest owner through that guest's
+user manager. Permission to join does not authorize other root helper modes.
 
 ## Compatibility with the earlier sandbox launcher
 
