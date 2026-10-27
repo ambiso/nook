@@ -1,8 +1,8 @@
-//! Removal of saved instances runs as the owner, never through the root helper.
-//! Directory descriptors and openat2 keep traversal away from symlinks and mounts.
+//! Directory descriptors and openat2 keep saved-instance traversal away from
+//! symlinks and mounts. Ordinary deletion runs as the owner; the authenticated
+//! root helper uses the same traversal for subordinate-UID container data.
 
 use crate::config::{Profile, Result};
-use nix::fcntl::{Flock, FlockArg};
 use rustix::{
     fd::{AsFd, OwnedFd},
     fs::{
@@ -65,35 +65,13 @@ pub fn ensure_directory_beneath(root_path: &Path, relative: &Path) -> Result<Pat
 }
 use std::{
     ffi::CStr,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
+        fs::PermissionsExt,
         io::AsRawFd,
     },
     path::{Path, PathBuf},
 };
-
-pub fn lock_instance(profile: &Profile, instance: &str) -> Result<Flock<File>> {
-    if nix::unistd::geteuid().as_raw() != profile.host_uid()? {
-        return Err("instance storage must be managed as its host owner".into());
-    }
-    profile.machine(instance)?;
-    // Keep this inode outside the deleted tree and do not unlink it afterward:
-    // replacing a lock file would let a concurrent launcher lock a different inode.
-    let directory = Path::new(profile.get("state")?).join(".locks");
-    fs::create_dir_all(&directory)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(directory.join(instance))?;
-    Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, error)| {
-        format!("instance is busy starting, running, or being deleted: {error}").into()
-    })
-}
 
 /// Move the pre-instance-layout main home into the uniform instance tree.
 ///
@@ -171,11 +149,25 @@ impl SavedInstance {
     }
 
     pub fn remove(&self) -> Result<()> {
+        self.remove_with_privileges(false)
+    }
+
+    pub fn remove_privileged(&self, owner: u32) -> Result<()> {
+        if !nix::unistd::geteuid().is_root() {
+            return Err("privileged instance deletion requires root".into());
+        }
+        if fstat(&self.root)?.st_uid != owner {
+            return Err("instance root does not belong to the authenticated owner".into());
+        }
+        self.remove_with_privileges(true)
+    }
+
+    fn remove_with_privileges(&self, privileged: bool) -> Result<()> {
         verify_entry(&self.parent, self.name.as_str(), &self.root)?;
         // Discover existing mount boundaries before deleting any files.
         // The removal pass repeats the checks, since the tree can change.
-        visit(&self.root, false, 0)?;
-        visit(&self.root, true, 0)?;
+        visit(&self.root, false, 0, privileged)?;
+        visit(&self.root, true, 0, privileged)?;
         verify_entry(&self.parent, self.name.as_str(), &self.root)?;
         unlinkat(&self.parent, self.name.as_str(), AtFlags::REMOVEDIR)?;
         Ok(())
@@ -201,7 +193,7 @@ fn verify_entry(parent: impl AsFd, name: impl rustix::path::Arg, opened: impl As
     Ok(())
 }
 
-fn visit(directory: impl AsFd, remove: bool, depth: usize) -> Result<()> {
+fn visit(directory: impl AsFd, remove: bool, depth: usize, privileged: bool) -> Result<()> {
     if depth > 256 {
         return Err("instance directory nesting exceeds the deletion limit".into());
     }
@@ -211,12 +203,18 @@ fn visit(directory: impl AsFd, remove: bool, depth: usize) -> Result<()> {
         if name == c"." || name == c".." {
             continue;
         }
-        visit_entry(&directory, name, remove, depth)?;
+        visit_entry(&directory, name, remove, depth, privileged)?;
     }
     Ok(())
 }
 
-fn visit_entry(directory: impl AsFd, name: &CStr, remove: bool, depth: usize) -> Result<()> {
+fn visit_entry(
+    directory: impl AsFd,
+    name: &CStr,
+    remove: bool,
+    depth: usize,
+    privileged: bool,
+) -> Result<()> {
     // O_PATH|O_NOFOLLOW opens a symlink itself. NO_XDEV rejects bind mounts too,
     // including mounts whose st_dev matches the enclosing filesystem.
     let entry = openat2(
@@ -232,9 +230,11 @@ fn visit_entry(directory: impl AsFd, name: &CStr, remove: bool, depth: usize) ->
     let metadata = fstat(&entry)?;
     let is_directory = FileType::from_raw_mode(metadata.st_mode) == FileType::Directory;
     if is_directory {
-        make_directory_removable(&entry, metadata.st_uid, metadata.st_mode)?;
+        if !privileged {
+            make_directory_removable(&entry, metadata.st_uid, metadata.st_mode)?;
+        }
         let child = open_directory(&entry, Path::new("."))?;
-        visit(&child, remove, depth + 1)?;
+        visit(&child, remove, depth + 1, privileged)?;
     }
     if remove {
         verify_entry(&directory, name, &entry)?;
@@ -363,17 +363,7 @@ mod tests {
     #[test]
     fn mounts_are_rejected_before_any_removal() {
         let root = File::open("/").unwrap();
-        assert!(visit_entry(&root, c"proc", false, 0).is_err());
-    }
-
-    #[test]
-    fn lifecycle_lock_excludes_startup_and_deletion() {
-        let temporary = tempfile::tempdir().unwrap();
-        let profile = profile(temporary.path());
-        let lock = lock_instance(&profile, "n-test").unwrap();
-        assert!(lock_instance(&profile, "n-test").is_err());
-        drop(lock);
-        assert!(lock_instance(&profile, "n-test").is_ok());
+        assert!(visit_entry(&root, c"proc", false, 0, false).is_err());
     }
 
     #[test]

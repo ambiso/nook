@@ -25,6 +25,8 @@ enum Action {
     Reload(Target),
     /// Enter a running guest after pkexec authentication.
     Enter(Enter),
+    /// Delete a stopped named instance after pkexec authentication.
+    Delete(Delete),
 }
 
 #[derive(Args)]
@@ -44,6 +46,14 @@ struct Enter {
     host_environment: Vec<String>,
     #[arg(last = true)]
     command: Vec<String>,
+}
+
+#[derive(Args)]
+struct Delete {
+    #[arg(value_parser = parse_profile_name)]
+    profile: String,
+    instance: String,
+    expected_profile: PathBuf,
 }
 
 fn parse_profile_name(value: &str) -> std::result::Result<String, String> {
@@ -76,7 +86,7 @@ fn parse_host_environment(value: &str) -> std::result::Result<String, String> {
     }
 }
 
-fn installed_entry_profile(name: &str) -> Result<Profile> {
+fn installed_user_profile(name: &str) -> Result<Profile> {
     let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
     let account = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(caller))?
         .ok_or("authenticated caller has no host account")?;
@@ -93,7 +103,9 @@ fn installed_entry_profile(name: &str) -> Result<Profile> {
         )
     })?;
     if !declared.starts_with("/nix/store/") {
-        return Err("entry accepts only profiles installed by the host module".into());
+        return Err(
+            "privileged user operations accept only profiles installed by the host module".into(),
+        );
     }
     // Load only after the caller's UID and bounded profile name have selected
     // a root-managed registry entry. A pkexec client never supplies a path for
@@ -121,7 +133,7 @@ fn run() -> Result<i32> {
             if env::var_os("PKEXEC_UID").is_none() {
                 return Err("entry requires pkexec authentication".into());
             }
-            let profile = installed_entry_profile(&request.profile)?;
+            let profile = installed_user_profile(&request.profile)?;
             supervise::enter(
                 &profile,
                 &request.instance,
@@ -130,15 +142,29 @@ fn run() -> Result<i32> {
                 &request.host_environment,
             )
         }
+        Action::Delete(request) => {
+            if env::var_os("PKEXEC_UID").is_none() {
+                return Err("deletion requires pkexec authentication".into());
+            }
+            let profile = installed_user_profile(&request.profile)?;
+            if profile.dir != request.expected_profile {
+                return Err("installed profile changed; retry the deletion".into());
+            }
+            supervise::delete(&profile, &request.instance)
+        }
         Action::Serve(target) => {
             if env::var_os("PKEXEC_UID").is_some() {
-                return Err("pkexec authorization is restricted to guest entry".into());
+                return Err(
+                    "pkexec authorization is restricted to authenticated user operations".into(),
+                );
             }
             supervise::serve(&Profile::load(&target.profile)?, &target.instance)
         }
         Action::Reload(target) => {
             if env::var_os("PKEXEC_UID").is_some() {
-                return Err("pkexec authorization is restricted to guest entry".into());
+                return Err(
+                    "pkexec authorization is restricted to authenticated user operations".into(),
+                );
             }
             supervise::reload(&Profile::load(&target.profile)?, &target.instance)
         }

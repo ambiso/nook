@@ -76,6 +76,44 @@ fn as_user<T>(profile: &Profile, operation: impl FnOnce() -> Result<T>) -> Resul
     setgroups(&[])?;
     result
 }
+
+fn instance_lock(profile: &Profile, instance: &str) -> Result<File> {
+    if !geteuid().is_root() {
+        return Err("instance lifecycle locking requires the privileged helper".into());
+    }
+    profile.machine(instance)?;
+    // uid_range_at treats non-hidden entries in its state directory as numeric
+    // reservations. Keep lifecycle locks in that allocator's hidden namespace.
+    let directory = Path::new("/var/lib/sandbox/uid-ranges/.instance-locks")
+        .join(profile.owner_key()?)
+        .join(profile.get("name")?);
+    instance_lock_at(&directory, instance, 0)
+}
+
+fn instance_lock_at(directory: &Path, instance: &str, expected_owner: u32) -> Result<File> {
+    fs::create_dir_all(&directory)?;
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir()
+        || metadata.uid() != expected_owner
+        || metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err("instance lock directory must be root-owned and not writable by users".into());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(OFlag::O_NOFOLLOW.bits())
+        .open(directory.join(instance))?;
+    file.try_lock().map_err(|error| {
+        io::Error::other(format!(
+            "instance is busy starting, running, or being deleted: {error}"
+        ))
+    })?;
+    Ok(file)
+}
 fn pin(profile: &Profile, path: &Path, writable: bool) -> Result<File> {
     as_user(profile, || {
         // Pin the inode with the owner's credentials before any privileged
@@ -1221,9 +1259,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     // lifecycle lock until this supervisor exits so those operations cannot
     // overlap startup or a running instance.
     let _storage_lock = if instance == "main" || instance.starts_with("n-") {
-        Some(as_user(profile, || {
-            crate::storage::lock_instance(profile, instance)
-        })?)
+        Some(instance_lock(profile, instance)?)
     } else {
         None
     };
@@ -1697,6 +1733,42 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     }
 }
 
+pub fn delete(profile: &Profile, instance: &str) -> Result<i32> {
+    if !geteuid().is_root() {
+        return Err("instance deletion requires the privileged Nook helper".into());
+    }
+    if !instance.starts_with("n-") || !valid_instance(instance) {
+        return Err("only named persistent instances can be deleted".into());
+    }
+    let canonical = fs::canonicalize(&profile.dir)?;
+    if !canonical.starts_with("/nix/store/") {
+        return Err("instance deletion requires an immutable installed profile".into());
+    }
+    check_supervisor_executable(profile)?;
+
+    // The supervisor holds the same root-managed lock for its whole lifetime.
+    // The additional unit-state check covers supervisors from before this lock
+    // moved out of the user-controlled state directory.
+    let lock = instance_lock(profile, instance)?;
+    let state = Command::new("/run/current-system/sw/bin/systemctl")
+        .args([
+            "show",
+            "--property=ActiveState",
+            "--value",
+            &profile.unit(instance)?,
+        ])
+        .output()?;
+    if !state.status.success() || String::from_utf8_lossy(&state.stdout).trim() != "inactive" {
+        return Err("stop the instance with nk stop before deleting it".into());
+    }
+    let saved = as_user(profile, || {
+        crate::storage::SavedInstance::open(profile, instance)
+    })?;
+    saved.remove_privileged(profile.host_uid()?)?;
+    drop(lock);
+    Ok(0)
+}
+
 pub fn enter(
     profile: &Profile,
     instance: &str,
@@ -1890,8 +1962,25 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_completed_reload_failure, owner_id_mappings, uid_range_at};
+    use super::{clear_completed_reload_failure, instance_lock_at, owner_id_mappings, uid_range_at};
     use std::{fs, path::Path};
+
+    #[test]
+    fn lifecycle_locks_use_one_protected_inode() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("locks");
+        let owner = nix::unistd::geteuid().as_raw();
+        let lock = instance_lock_at(&directory, "n-test", owner).unwrap();
+        assert!(instance_lock_at(&directory, "n-test", owner).is_err());
+        drop(lock);
+        assert!(instance_lock_at(&directory, "n-test", owner).is_ok());
+
+        let target = temporary.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let linked = temporary.path().join("linked-locks");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        assert!(instance_lock_at(&linked, "n-test", owner).is_err());
+    }
 
     #[test]
     fn only_the_completed_reload_generation_can_clear_its_failure_marker() {

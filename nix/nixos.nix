@@ -124,7 +124,8 @@ in
         ];
     security.polkit.enablePkexecWrapper = lib.mkIf (profiles != [ ]) true;
     # Only the narrow privileged helper is authorized. It checks PKEXEC_UID
-    # against the immutable installed profile and exposes no public CLI modes.
+    # against the immutable installed profile and exposes only narrow entry and
+    # stopped-instance deletion operations.
     security.polkit.extraConfig =
       lib.concatMapStrings (username: ''
         polkit.addRule(function(action, subject) {

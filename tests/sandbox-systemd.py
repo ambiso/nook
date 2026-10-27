@@ -656,8 +656,23 @@ for desktop_id, query in [
     assert "check\tn-from-tui\tstopped" in cli("list")
     inside("test -e ~/tui-created", "--name from-tui")
     machine.fail(launcher("delete check --name from-tui --yes"))
+    machine.fail(
+        as_owner(
+            "/run/wrappers/bin/pkexec /etc/sandbox/helpers/ualice delete check n-from-tui "
+            "$(readlink -f /etc/sandbox/profiles/ualice/check)"
+        )
+    )
     cli("stop check --name from-tui")
     machine.fail(launcher("delete check --name from-tui </dev/null"))
+    # Nested rootless containers can leave directories owned by subordinate
+    # host IDs. The authenticated root helper must remove those without ever
+    # following links or mounts outside this instance.
+    machine.succeed(
+        "mkdir -p /home/alice/.sandbox/check/instances/n-from-tui/home/subuid/locked; "
+        "touch /home/alice/.sandbox/check/instances/n-from-tui/home/subuid/locked/data; "
+        "chown -R 200000:200000 /home/alice/.sandbox/check/instances/n-from-tui/home/subuid; "
+        "chmod 0555 /home/alice/.sandbox/check/instances/n-from-tui/home/subuid/locked"
+    )
     cli("delete check --name from-tui --yes")
     assert "check\tn-from-tui\t" not in cli("list")
     machine.succeed("test ! -e /home/alice/.sandbox/check/instances/n-from-tui")

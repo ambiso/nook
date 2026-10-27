@@ -177,7 +177,6 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                             match delete_instance(
                                 &profiles[choice.profile],
                                 &choice.instance,
-                                &input.saved,
                             ) {
                                 Ok(()) => {
                                     deletion = None;

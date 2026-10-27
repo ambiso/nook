@@ -171,13 +171,21 @@ fn prepare_deletion(profile: &Profile, instance: &str) -> Result<storage::SavedI
 fn delete_instance(
     profile: &Profile,
     instance: &str,
-    saved: &storage::SavedInstance,
 ) -> Result<()> {
-    // The supervisor holds this same lock for its entire lifetime. Checking
-    // systemd again under the lock covers a launch racing the confirmation.
-    let _lock = storage::lock_instance(profile, instance)?;
     require_stopped(profile, instance)?;
-    saved.remove()
+    let expected_profile = fs::canonicalize(&profile.dir)?;
+    let status = Command::new("/run/wrappers/bin/pkexec")
+        .arg(privileged_helper(profile)?)
+        .arg("delete")
+        .arg(profile.get("name")?)
+        .arg(instance)
+        .arg(expected_profile)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("privileged instance deletion failed".into())
+    }
 }
 
 fn confirm_deletion(
@@ -680,7 +688,7 @@ fn run() -> Result<i32> {
             let instance = request.selection.id();
             let saved = prepare_deletion(profile, &instance)?;
             if request.yes || confirm_deletion(profile, &instance, &saved)? {
-                delete_instance(profile, &instance, &saved)?;
+                delete_instance(profile, &instance)?;
                 println!("Deleted {}/{instance}", profile.get("name")?);
             }
             Ok(0)
