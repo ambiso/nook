@@ -65,6 +65,7 @@ let
       "QT_STYLE_OVERRIDE"
       "XCURSOR_THEME"
       "XCURSOR_SIZE"
+      "SSH_ASKPASS"
     ];
   # Login shells expand these NixOS profile placeholders; systemd manager
   # environments do not. Resolve the known user paths without evaluating shell
@@ -129,12 +130,7 @@ let
   sessionEnvironment =
     lib.filterAttrs (name: _: lib.elem name sessionVariableNames) config.environment.variables
     // standardCommandEnvironment
-    // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; }
-    // {
-      # OpenSSH's FIDO signing path uses askpass as a passive touch/PIN
-      # notifier. Its compiled-in libexec path is not part of the Nix package.
-      SSH_ASKPASS = "${pkgs.openssh-askpass}/libexec/gtk-ssh-askpass";
-    };
+    // lib.optionalAttrs (cursorPath != "") { XCURSOR_PATH = cursorPath; };
 
 in
 {

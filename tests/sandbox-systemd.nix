@@ -369,6 +369,9 @@ pkgs.testers.runNixOSTest {
         nix = true;
         nixosModules = [
           {
+            # Nook does not choose a graphical askpass implementation, but a
+            # guest module may override NixOS's empty default.
+            environment.variables.SSH_ASKPASS = pkgs.lib.mkForce "/custom/ssh-askpass";
             networking.hosts = {
               "127.0.0.1" = [ "project.test" ];
               "::1" = [ "project.test" ];

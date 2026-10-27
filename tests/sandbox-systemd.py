@@ -524,7 +524,7 @@ try:
         test "$TERM" = xterm-256color
         test "$COLORTERM" = truecolor
         test "$NOOK_TEST_HOST_ENV" = forwarded
-        test -x "$SSH_ASKPASS"
+        test "$SSH_ASKPASS" = /custom/ssh-askpass
         test "$MOZ_ENABLE_WAYLAND" = 1
         test "$NIX_REMOTE" = daemon
         test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
@@ -549,7 +549,7 @@ try:
             *sandbox-session-tools/bin/systemctl) ;;
             *) exit 1 ;;
           esac
-          test -x "$SSH_ASKPASS"
+          test "$SSH_ASKPASS" = /custom/ssh-askpass
           test "$NIX_REMOTE" = daemon
           test "$NIXPKGS_CONFIG" = /etc/nix/nixpkgs-config.nix
         '
