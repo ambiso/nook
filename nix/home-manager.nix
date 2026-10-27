@@ -289,7 +289,7 @@ let
             # still matches the previous generation; user edits remain protected.
             old_ssh="''${XDG_STATE_HOME:-$HOME/.local/state}/home-manager/gcroots/current-home/home-files/.ssh/config"
             if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ] \
-                && [ -f "$old_ssh" ] && cmp -s "$HOME/.ssh/config" "$old_ssh"; then
+                && [ -f "$old_ssh" ] && ${pkgs.uutils-diffutils}/bin/cmp -s "$HOME/.ssh/config" "$old_ssh"; then
               rm "$HOME/.ssh/config"
             fi
             PATH="${pkgs.nix}/bin:$PATH" ${hm.home.activationPackage}/activate
