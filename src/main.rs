@@ -249,6 +249,12 @@ fn control_instance(profile: &Profile, instance: &str, verb: &str) -> Result<Exi
         .status()?)
 }
 
+fn request_stop(profile: &Profile, instance: &str) -> Result<ExitStatus> {
+    Ok(Command::new("systemctl")
+        .args(["stop", "--no-block", &profile.unit(instance)?])
+        .status()?)
+}
+
 fn is_running(profile: &Profile, instance: &str) -> bool {
     profile.unit(instance).is_ok_and(|unit| {
         Command::new("systemctl")

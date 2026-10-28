@@ -491,6 +491,13 @@ pkgs.testers.runNixOSTest {
               };
               Install.WantedBy = [ "default.target" ];
             };
+            systemd.user.services.stubborn-shutdown = {
+              Unit.Description = "Fixture that ignores graceful shutdown";
+              Service.ExecStart = pkgs.writeShellScript "stubborn-shutdown" ''
+                trap "" TERM
+                while true; do sleep 1; done
+              '';
+            };
           }
         ];
       };

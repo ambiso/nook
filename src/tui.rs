@@ -1,6 +1,6 @@
 use crate::{
-    Choice, Profile, Result, choices, control_instance, delete_instance, new_ephemeral_id,
-    parse_name, prepare_deletion, storage::SavedInstance,
+    Choice, Profile, Result, choices, delete_instance, new_ephemeral_id, parse_name,
+    prepare_deletion, request_stop, storage::SavedInstance,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -237,7 +237,20 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     }
                     KeyCode::Char('s') => {
                         let choice = &entries[selected];
-                        control_instance(&profiles[choice.profile], &choice.instance, "stop")?;
+                        let profile = &profiles[choice.profile];
+                        if !request_stop(profile, &choice.instance)?.success() {
+                            status = Some(format!(
+                                "Failed to request stop for {}/{}",
+                                profile.get("name")?,
+                                choice.instance
+                            ));
+                            continue;
+                        }
+                        status = Some(format!(
+                            "Stopping {}/{}…",
+                            profile.get("name")?,
+                            choice.instance
+                        ));
                         entries = choices(profiles)?;
                     }
                     KeyCode::Char('d') => {

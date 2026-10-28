@@ -1659,16 +1659,35 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     let mut child = nspawn.spawn()?;
     let deadline = Instant::now() + Duration::from_secs(110);
     let mut ready = false;
-    let mut stopping = false;
+    let mut stopping_since = None;
+    let mut forced_shutdown = false;
     let mut refresh = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(status.code().unwrap_or(1));
+            // A stop request may end with nspawn being killed by the forced
+            // shutdown below. That is still a successful requested stop, not
+            // a crashed sandbox.
+            return Ok(if stopping_since.is_some() {
+                0
+            } else {
+                status.code().unwrap_or(1)
+            });
         }
-        if stop.load(Ordering::Relaxed) && !stopping {
+        if stop.load(Ordering::Relaxed) && stopping_since.is_none() {
             let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
-            stopping = true;
+            stopping_since = Some(Instant::now());
         }
+        // nspawn interprets the first SIGTERM as a request for an orderly
+        // shutdown and a second as an immediate termination. A broken guest
+        // service must not leave `nk stop` and configuration activation
+        // waiting for systemd's much longer per-unit shutdown timeout.
+        if stopping_since.is_some_and(|started| started.elapsed() >= Duration::from_secs(10))
+            && !forced_shutdown
+        {
+            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+            forced_shutdown = true;
+        }
+        let stopping = stopping_since.is_some();
         let timed_out = Instant::now() > deadline;
         if !ready && !stopping && (received_ready(&notifications)? || timed_out) {
             let status = Command::new("systemctl")

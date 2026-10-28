@@ -201,6 +201,22 @@ def main():
                 == 0
             )
             assert "●" in indicator_output.decode(errors="replace"), indicator_output
+            stopped.unlink(missing_ok=True)
+            assert (
+                select_instance(
+                    binary,
+                    profiles,
+                    environment | {"NOOK_SMOKE_STATE": "active"},
+                    [("Nook", b"s"), ("Stopping", b"q")],
+                )
+                == 0
+            )
+            stop_arguments = json.loads(stopped.read_text())
+            assert stop_arguments[0] == "--no-block", stop_arguments
+            assert re.fullmatch(
+                rf"sandbox-{owner_key()}-{re.escape(names[0])}@main\.service",
+                stop_arguments[1],
+            ), stop_arguments
             result = subprocess.run(
                 [
                     str(binary),

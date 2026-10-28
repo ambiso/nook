@@ -1,5 +1,6 @@
 import shlex
 import textwrap
+import time
 
 machine.start()
 machine.wait_for_unit("multi-user.target")
@@ -782,7 +783,12 @@ for desktop_id, query in [
     machine.wait_until_succeeds(
         "test -e /home/alice/.sandbox/check/instances/main/home/joiner-ready"
     )
+    inside("systemctl --user start stubborn-shutdown.service")
+    stop_started = time.monotonic()
     cli("stop check")
+    stop_elapsed = time.monotonic() - stop_started
+    assert 9 < stop_elapsed < 20
+    machine.succeed("! systemctl is-failed --quiet sandbox-ualice-check@main.service")
     machine.succeed(
         "test ! -e /home/alice/.sandbox/check/instances/main/home/pgdata/postmaster.pid"
     )

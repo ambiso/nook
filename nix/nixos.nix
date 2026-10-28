@@ -80,7 +80,10 @@ in
               DelegateSubgroup = "supervisor";
               KillMode = "mixed";
               TimeoutStartSec = 120;
-              TimeoutStopSec = 120;
+              # The supervisor escalates a stuck guest shutdown after ten
+              # seconds. Keep a host-side bound in case supervisor cleanup
+              # itself becomes stuck.
+              TimeoutStopSec = 30;
               Restart = "no";
             }
             // lib.mapAttrs' (limit: value: lib.nameValuePair "Limit${limit}" value) (
