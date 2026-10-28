@@ -355,6 +355,17 @@ impl Profile {
         Ok(home)
     }
 
+    // TODO(nook-legacy-main-home): Remove this helper together with
+    // storage::migrate_legacy_main_home, its serve() call, and the tests found
+    // by `rg legacy_main_home` in the next breaking release that drops
+    // supervisor-contract-1 compatibility.
+    fn uses_legacy_main_home_layout(&self) -> bool {
+        self.values
+            .get("supervisorContract")
+            .and_then(|value| value.parse::<u32>().ok())
+            .is_none_or(|contract| contract < 2)
+    }
+
     pub fn persistent_home(&self, instance: &str) -> Result<Option<PathBuf>> {
         if !valid_instance(instance) {
             return Err("invalid sandbox instance".into());
@@ -363,6 +374,13 @@ impl Profile {
             return Ok(None);
         }
         let state = PathBuf::from(self.get("state")?);
+        // Contract 1 predates the uniform instance layout. A running guest can
+        // intentionally keep that generation across a host rebuild, so entry
+        // path translation must keep using its pinned legacy home until the
+        // guest is stopped and contract 2 migrates it atomically.
+        if instance == "main" && self.flag("persistent") && self.uses_legacy_main_home_layout() {
+            return Ok(Some(state.join("home")));
+        }
         // A named instance explicitly requests persistence, even when the
         // template's main instance normally has a temporary home. Main still
         // uses the same directory layout and lifecycle model as every other
@@ -659,6 +677,7 @@ mod tests {
                 ("state".into(), state.to_string_lossy().into_owned()),
                 ("home".into(), "/home/test".into()),
                 ("name".into(), "dev".into()),
+                ("supervisorContract".into(), "2".into()),
                 ("uid".into(), "1000".into()),
                 ("gid".into(), "100".into()),
                 (
@@ -805,6 +824,31 @@ mod tests {
                 .guest_working_directory("main", &state.join("instances/main/home"))
                 .unwrap(),
             Path::new("/home/test"),
+        );
+    }
+
+    #[test]
+    fn working_directory_maps_a_legacy_main_home() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = directory.path().join("dev");
+        let mut profile = profile(&state, true);
+        profile
+            .values
+            .insert("supervisorContract".into(), "1".into());
+        let project = state.join("home/Projects/legacy");
+        fs::create_dir_all(&project).unwrap();
+
+        assert_eq!(
+            profile.guest_working_directory("main", &project).unwrap(),
+            Path::new("/home/test/Projects/legacy"),
+        );
+        assert_eq!(
+            profile.persistent_home("main").unwrap(),
+            Some(state.join("home")),
+        );
+        assert_eq!(
+            profile.persistent_home("n-project").unwrap(),
+            Some(state.join("instances/n-project/home")),
         );
     }
 

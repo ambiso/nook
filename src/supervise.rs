@@ -1273,6 +1273,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         return Err("missing systemd RuntimeDirectory".into());
     }
     if instance == "main" && profile.flag("persistent") {
+        // TODO(nook-legacy-main-home): Remove with the contract-1 home mapper.
         as_user(profile, || {
             crate::storage::migrate_legacy_main_home(profile)
         })?;

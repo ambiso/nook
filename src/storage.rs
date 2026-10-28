@@ -77,6 +77,8 @@ use std::{
 /// The caller must hold main's lifecycle lock so no second supervisor can race
 /// the move. Both source and destination parents are opened beneath the state
 /// directory before `renameat`, so path replacement cannot redirect the move.
+// TODO(nook-legacy-main-home): Remove in the breaking release described by
+// Profile::uses_legacy_main_home_layout.
 pub fn migrate_legacy_main_home(profile: &Profile) -> Result<()> {
     if nix::unistd::geteuid().as_raw() != profile.host_uid()? {
         return Err("instance storage must be managed as its host owner".into());
