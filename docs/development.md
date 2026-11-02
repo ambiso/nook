@@ -125,7 +125,7 @@ nix build --print-build-logs .#checks.x86_64-linux.integration
 ```
 
 This boots a headless NixOS VM and exercises the installed launcher and modules:
-systemd ownership and readiness, Home Manager activation and caching, persistent
+systemd ownership and readiness, folded Home Manager activation, persistent
 and ephemeral homes, the TUI, directory translation, nested Podman and FHS
 execution, Wayland and private Xwayland, audio, devices, networking, desktop
 metadata, and portals. The portal frontend and document store are real; a test

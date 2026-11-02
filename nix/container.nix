@@ -214,6 +214,15 @@ in
       . /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh
     ''
   );
+  # Application metadata must resolve for every app in the guest: gio
+  # launches the desktop entries the per-user profile exposes, and GTK/GIO
+  # resolve icons against the same data dirs. Link them deterministically
+  # instead of relying on incidental module contributions.
+  environment.pathsToLink = [
+    "/share/applications"
+    "/share/pixmaps"
+    "/share/icons"
+  ];
   # Shell startup may rebuild PATH from the configured profiles. Keep Nook's
   # wired session tools ahead of them; command boundaries sourced
   # /etc/set-environment already.
@@ -248,7 +257,7 @@ import shlex
 
 ignored = {"OLDPWD", "PWD", "SHLVL", "_"}
 for variable, value in sorted(os.environ.items()):
-    if variable in ignored or variable.startswith("__") or variable == "PATH":
+    if variable in ignored or variable.startswith("__"):
         continue
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
         print(f"{variable}={shlex.quote(value)}")
