@@ -6,23 +6,6 @@
   diagnostics ? false,
 }:
 let
-  cacheProfile =
-    { name, ... }:
-    {
-      gpu = false;
-      audio = false;
-      network = false;
-      stateDirectory = ".sandbox/cache-test";
-      nixosModules = [ { networking.hostName = "cache-workstation"; } ];
-      homeManagerModules = [
-        ({ lib, ... }: {
-          home.file.cache-version.text = "${name}\n";
-          home.activation.countActivations = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-            echo ${pkgs.lib.escapeShellArg name} >> "$HOME/activation-history"
-          '';
-        })
-      ];
-    };
   portalPython = pkgs.python3.withPackages (p: [
     p.dbus-python
     p.pygobject3
@@ -531,8 +514,6 @@ pkgs.testers.runNixOSTest {
         network = false;
         audio = false;
       };
-      programs.nook.sandboxes.cache-old.imports = [ cacheProfile ];
-      programs.nook.sandboxes.cache-new.imports = [ cacheProfile ];
     };
     environment.systemPackages = [
       pkgs.desktop-file-utils

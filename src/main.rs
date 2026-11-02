@@ -47,8 +47,6 @@ enum Action {
     /// Launch an instance if necessary, then run a command or shell
     #[command(visible_aliases = ["l", "start", "s"])]
     Launch(Launch),
-    /// Launch the profile's default GUI application with optional arguments
-    Gui(Launch),
     /// Run the configured shell; used by nk-PROFILE wrappers
     Shell(Launch),
     /// Stop an instance; ephemeral homes are deleted on shutdown
@@ -274,7 +272,7 @@ fn new_ephemeral_id() -> Result<String> {
     Ok(format!("e-{suffix}"))
 }
 
-fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> Result<()> {
+fn start_instance(profile: &Profile, instance: &str) -> Result<()> {
     let runtime = profile.runtime(instance)?;
     fs::create_dir_all(&runtime)?;
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
@@ -287,9 +285,6 @@ fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> R
         .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
     {
         return Err("WAYLAND_DISPLAY must name a socket within XDG_RUNTIME_DIR".into());
-    }
-    if require_wayland && wayland.is_empty() {
-        return Err("GUI launch requires a Wayland session".into());
     }
     // Concurrent cold starts must never let the supervisor read a truncated
     // socket name. Publish each complete selection with an atomic rename.
@@ -324,7 +319,7 @@ fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> R
         eprintln!(
             concat!(
                 "nk: Home Manager activation failed; continuing in recovery mode.\n",
-                "Run `nook-home-manager switch -b backup` inside the sandbox, ",
+                "Resolve the conflicting files (or set home-manager.backupFileExtension), ",
                 "then stop and relaunch {}/{}."
             ),
             profile.get("name")?,
@@ -338,7 +333,6 @@ fn start_instance(profile: &Profile, instance: &str, require_wayland: bool) -> R
 enum EntryPoint {
     Command,
     Shell,
-    Gui,
 }
 
 fn privileged_helper(profile: &Profile) -> Result<PathBuf> {
@@ -367,27 +361,19 @@ fn launch(
     start_if_stopped: bool,
     entry_point: EntryPoint,
 ) -> Result<i32> {
-    let gui = matches!(entry_point, EntryPoint::Gui);
     if !is_running(profile, instance) {
         if !start_if_stopped {
             return Err("instance is not running; omit --join to start it".into());
         }
-        if gui && profile.get("gui")?.is_empty() {
-            return Err("profile has no default GUI application".into());
-        }
-        start_instance(profile, instance, gui)?;
+        start_instance(profile, instance)?;
     }
     let running = profile.running_profile(instance)?;
     let mut arguments = Vec::new();
     let executable = match entry_point {
         EntryPoint::Command => None,
         EntryPoint::Shell => Some(running.get("shell")?),
-        EntryPoint::Gui => Some(running.get("gui")?),
     };
     if let Some(executable) = executable {
-        if executable.is_empty() {
-            return Err("profile has no default GUI application".into());
-        }
         arguments.push(executable.to_owned());
     }
     arguments.extend_from_slice(command);
@@ -400,14 +386,12 @@ fn launch(
         .arg("enter")
         .arg(profile.get("name")?)
         .arg(instance);
-    if !gui {
-        // pkexec replaces the host working directory. Translate it while still
-        // unprivileged, then carry it as data to the guest user service.
-        if let Ok(directory) = env::current_dir() {
-            enter
-                .arg("--entry-directory")
-                .arg(running.guest_working_directory(instance, &directory)?);
-        }
+    // pkexec replaces the host working directory. Translate it while still
+    // unprivileged, then carry it as data to the guest user service.
+    if let Ok(directory) = env::current_dir() {
+        enter
+            .arg("--entry-directory")
+            .arg(running.guest_working_directory(instance, &directory)?);
     }
     // pkexec deliberately sanitizes its environment. Carry only variables
     // selected by the root-installed profile; the privileged helper validates
@@ -699,7 +683,6 @@ fn run() -> Result<i32> {
         action => {
             let (request, entry_point) = match action {
                 Action::Launch(request) => (request, EntryPoint::Command),
-                Action::Gui(request) => (request, EntryPoint::Gui),
                 Action::Shell(request) => (request, EntryPoint::Shell),
                 _ => unreachable!(),
             };

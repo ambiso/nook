@@ -7,10 +7,9 @@
   gid,
   home,
   shellPackage,
-  appPackage,
+  packages,
   sessionTools,
-  sessionLoader,
-  sessionEnvironmentGenerator,
+  homeManagerServiceName,
   activation,
   environment,
   startX,
@@ -51,7 +50,6 @@ let
   requiredEnvironment = {
     WAYLAND_DISPLAY = "wayland-0";
     XDG_DATA_DIRS = lib.concatStringsSep ":" [
-      "${appPackage}/share"
       "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}"
       "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}"
       "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}"
@@ -151,6 +149,12 @@ in
     group = "users";
     home = home;
     shell = shellPackage;
+    # The profile's application packages and, through the folded Home
+    # Manager integration, the user's home.packages become the per-user
+    # profile at /etc/profiles/per-user/<username>, which NixOS includes in
+    # PATH and XDG_DATA_DIRS. When Home Manager is enabled it appends its
+    # own user environment to this same option.
+    packages = packages;
     ignoreShellProgramCheck = true;
     linger = true;
     subUidRanges = [
@@ -167,34 +171,91 @@ in
     ];
   };
   environment.systemPackages = [
-    appPackage
     pkgs.dbus
-    pkgs.systemd
     pkgs.coreutils
+    pkgs.systemd
     pkgs.nix
     pkgs.adwaita-icon-theme
     pkgs.shared-mime-info
+    # Session infrastructure: bash and grep are the base every guest script
+    # assumes, xdg-open routes into the portal bridges, ps/pgrep and gio
+    # (via glib) round out the desktop session. Anything else belongs in a
+    # profile's `packages`.
+    pkgs.bashInteractive
+    pkgs.gnugrep
+    pkgs.procps
+    pkgs.xdg-utils
+    pkgs.glib
   ];
   environment.variables =
     lib.mapAttrs (_: lib.mkDefault) applicationDefaults
     // requiredEnvironment
+    # The user's session shell, exported like NixOS exports other evaluated
+    # environment values; the entry boundary no longer needs to re-set it.
+    // {
+      SHELL = lib.getExe shellPackage;
+    }
     # The profile shorthand is an explicit override of ordinary NixOS
     # defaults. A guest module can still replace it deliberately with mkForce.
     // lib.mapAttrs (_: lib.mkOverride 90) environment;
-  # Shell startup may rebuild PATH even though the command boundary already
-  # loaded the evaluated NixOS and Home Manager environments. Keep Nook's
-  # wrappers and selected application packages first.
+  # The per-user profile in environment.profiles expands $HOME and $USER at
+  # source time, so /etc/set-environment must not conflict with a guest
+  # module's plain definition of the same variable: defaults live in
+  # extraInit (runs last, conditional), not in the export block.
+  environment.extraInit = lib.mkAfter (
+    ''
+      export XDG_STATE_HOME="''${XDG_STATE_HOME:-$HOME/.local/state}"
+      export DBUS_SESSION_BUS_ADDRESS="''${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/${toString uid}/bus}"
+      unset DBUS_SYSTEM_BUS_ADDRESS
+    ''
+    + lib.optionalString (homeManagerServiceName != "") ''
+      # Session variables declared through the folded Home Manager
+      # configuration, installed into the per-user profile.
+      . /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh
+    ''
+  );
+  # Shell startup may rebuild PATH from the configured profiles. Keep Nook's
+  # wired session tools ahead of them; command boundaries sourced
+  # /etc/set-environment already.
   environment.shellInit = lib.mkAfter ''
     case ":$PATH:" in
       *":${sessionTools}/bin:"*) ;;
-      *) export PATH=${sessionTools}/bin:${appPackage}/bin:$PATH ;;
+      *) export PATH=${sessionTools}/bin:/run/wrappers/bin:$PATH ;;
     esac
   '';
-  # Seed the user manager before it starts units. The same loader is sourced by
-  # every Nook command, so a compatible live reload does not leave new commands
-  # with the manager's older environment.
+  # Seed the user manager before it starts units. The generator sources the
+  # same evaluated /etc/set-environment that Nook command boundaries source,
+  # so a compatible live reload does not leave new commands with an older
+  # manager environment.
   environment.etc."systemd/user-environment-generators/20-nook-session-environment" = {
-    source = sessionEnvironmentGenerator;
+    source = pkgs.writeShellScript "nook-session-environment-${username}" ''
+      # Generators run without session identity; seed the runtime identity
+      # that the evaluated profile-relative exports below expand. Start from
+      # a clean environment so manager or caller state cannot become ambient
+      # authority inside guest units.
+      exec ${pkgs.coreutils}/bin/env -i \
+        HOME=${lib.escapeShellArg home} \
+        USER=${lib.escapeShellArg username} \
+        LOGNAME=${lib.escapeShellArg username} \
+        XDG_RUNTIME_DIR=/run/user/${toString uid} \
+        ${pkgs.bash}/bin/bash -c ${
+          lib.escapeShellArg ''
+            . /etc/set-environment
+            exec ${pkgs.python3}/bin/python3 - <<'PYEOF'
+import os
+import re
+import shlex
+
+ignored = {"OLDPWD", "PWD", "SHLVL", "_"}
+for variable, value in sorted(os.environ.items()):
+    if variable in ignored or variable.startswith("__") or variable == "PATH":
+        continue
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+        print(f"{variable}={shlex.quote(value)}")
+PYEOF
+            ''
+        }
+    '';
     mode = "0755";
   };
   virtualisation.podman.enable = podman;
@@ -225,14 +286,18 @@ in
   systemd.services.sandbox-ready = {
     description = "Activate the sandbox home after its user manager starts";
     wantedBy = [ "multi-user.target" ];
-    requires = [
-      "user@${toString uid}.service"
-      "sandbox-procfs.service"
-    ];
-    after = [
-      "user@${toString uid}.service"
-      "sandbox-procfs.service"
-    ];
+    requires =
+      [
+        "user@${toString uid}.service"
+        "sandbox-procfs.service"
+      ]
+      ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
+    after =
+      [
+        "user@${toString uid}.service"
+        "sandbox-procfs.service"
+      ]
+      ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
     environment = {
       HOME = home;
       USER = username;
@@ -249,7 +314,9 @@ in
       RemainAfterExit = true;
       User = username;
       ExecStart = activation;
-      TimeoutStartSec = 90;
+      # Home Manager activation (which this service waits on) may run its own
+      # five-minute budget; never outlast it from the readiness side.
+      TimeoutStartSec = 310;
       # The guest root/journal disappears on failure. Forward activation
       # errors through nspawn's console into the host unit's journal as well.
       StandardOutput = "journal+console";

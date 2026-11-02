@@ -77,16 +77,6 @@ try:
     )
     machine.succeed(as_owner("mkdir -p ~/managed-host; echo host-home > ~/managed-host/marker"))
     machine.succeed("test ! -e /home/alice/.sandbox/check/home/Inbox")
-    # bwrap left mountpoint placeholders in the backing home. Migration must
-    # back them up, preserving edited files and directory contents as well.
-    machine.succeed(
-        as_owner(
-            "mkdir -p ~/.sandbox/check/home/legacy-directory; "
-            "touch ~/.sandbox/check/home/.hm-generation ~/.sandbox/check/home/activation-check; "
-            "echo 'legacy user edit' > ~/.sandbox/check/home/legacy-edit; "
-            "echo 'legacy directory data' > ~/.sandbox/check/home/legacy-directory/original"
-        )
-    )
     # Refusing a cold start must leave the service stopped.
     machine.fail(launcher("launch check --join -- true"))
     machine.fail("systemctl is-active --quiet sandbox-ualice-check@main.service")
@@ -192,16 +182,6 @@ try:
         touch ~/build/main-output ~/.cache/sccache/main-cache
     """)
     machine.succeed(as_owner(f"grep -Fx guest-output {shared_storage}/guest-marker"))
-    inside("""
-        test -f ~/activation-check.pre-systemd
-        test ! -s ~/activation-check.pre-systemd
-        grep -Fx 'legacy user edit' ~/legacy-edit.pre-systemd
-        grep -Fx 'new managed configuration' ~/legacy-edit
-        grep -Fx 'legacy directory data' ~/legacy-directory.pre-systemd/original
-        grep -Fx 'managed directory' ~/legacy-directory/managed
-    """)
-    # Ordinary homes retain HM's collision checks. A failed activation leaves
-    # the guest available for an ordinary backup-and-retry command.
     machine.succeed(
         as_owner(
             "mkdir -p ~/.sandbox/check/instances/n-collision/home; "
@@ -212,57 +192,24 @@ try:
         launcher("launch check --instance n-collision -- true") + " 2>&1"
     )
     assert "Home Manager activation failed; continuing in recovery mode" in recovery_output
+    # The detailed activation failure lives in the still-running guest journal.
     failure_log = machine.succeed(
         "journalctl -b -u sandbox-ualice-check@n-collision.service --no-pager"
     )
-    assert "would be clobbered" in failure_log
     assert "Home Manager activation failed" in failure_log
+    guest_log = machine.succeed(
+        "journalctl --machine=sbx-1000-check-n-collision -u home-manager-alice.service --no-pager"
+    )
+    assert "would be clobbered" in guest_log
     assert "activation timed out" not in failure_log
     machine.succeed("systemctl is-active --quiet sandbox-ualice-check@n-collision.service")
     machine.succeed("test -f /run/nook-ualice-check-n-collision/activation-failed")
     machine.succeed(
         as_owner(
-            "grep -Fx 'keep my edit' ~/.sandbox/check/instances/n-collision/home/activation-check; "
-            "test ! -e ~/.sandbox/check/instances/n-collision/home/activation-check.pre-systemd"
-        )
-    )
-    cli(
-        "launch check --instance n-collision -- "
-        "nook-home-manager switch -b nook-backup"
-    )
-    machine.succeed(
-        as_owner(
-            "grep -Fx activated ~/.sandbox/check/instances/n-collision/home/activation-check; "
-            "grep -Fx 'keep my edit' ~/.sandbox/check/instances/n-collision/home/activation-check.nook-backup"
+            "grep -Fx 'keep my edit' ~/.sandbox/check/instances/n-collision/home/activation-check"
         )
     )
     cli("stop check --instance n-collision")
-    # A completed home skips activation on restart, but a different generation
-    # must activate even when it uses the same persistent home. Removing the
-    # success marker forces a retry, as after an interrupted activation.
-    assert cli("launch cache-old -- uname -n").strip() == "cache-workstation"
-    cli("stop cache-old")
-    cli("launch cache-old -- true")
-    cli("stop cache-old")
-    cache_home = "/home/alice/.sandbox/cache-test/instances/main/home"
-    assert machine.succeed(f"cat {cache_home}/activation-history").splitlines() == [
-        "cache-old"
-    ]
-    cli("launch cache-new -- true")
-    cli("stop cache-new")
-    assert machine.succeed(f"cat {cache_home}/cache-version").strip() == "cache-new"
-    assert machine.succeed(f"cat {cache_home}/activation-history").splitlines() == [
-        "cache-old",
-        "cache-new",
-    ]
-    machine.succeed(as_owner(f"rm {cache_home}/.local/state/sandbox/home-generation"))
-    cli("launch cache-new -- true")
-    cli("stop cache-new")
-    assert machine.succeed(f"cat {cache_home}/activation-history").splitlines() == [
-        "cache-old",
-        "cache-new",
-        "cache-new",
-    ]
     inside("grep -Fx nested-bind-works ~/Inbox/child/shared.txt")
     machine.succeed(
         "test $(stat -c %u /home/alice/.sandbox/check/instances/main/home/Inbox) = 1000; "
@@ -340,7 +287,7 @@ try:
         )
     )
     inside(
-        "fc-match 'sans-serif:lang=ja:charset=65e5' | grep 'Noto Sans CJK JP'; grep -F 'search sandbox.test' /etc/resolv.conf; getent ahostsv4 search-check | grep -F 192.0.2.73; command -v xdg-open rg ps which strace"
+        "fc-match 'sans-serif:lang=ja:charset=65e5' | grep 'Noto Sans CJK JP'; grep -F 'search sandbox.test' /etc/resolv.conf; getent ahostsv4 search-check | grep -F 192.0.2.73; command -v xdg-open ps gio"
     )
     assert inside("date +%Z").strip() == machine.succeed("date +%Z").strip()
     inside("test -L /etc/localtime; readlink /etc/localtime | grep -F Europe/Berlin")
@@ -497,6 +444,7 @@ try:
     )
     inside("true", "--join")
 
+
     result = inside("""
         systemctl --user is-active --quiet postgres.service
         systemctl --user is-active --quiet session-environment-check.service
@@ -626,8 +574,13 @@ for desktop_id, query in [
             + shlex.quote(application_search)
         )
     )
-    assert "Usage" in cli("gui check -- --help 2>&1")
-    assert "fallback GUI started" in cli("gui fallback")
+    # GUI launches are the generated wrappers: they exec the guest-resolved
+    # desktop entry (gio against the running per-user profile) or the direct
+    # per-user binary for profiles without desktop data.
+    # These are the generated per-profile launch wrappers (what GNOME's
+    # desktop entries exec), not nk subcommands.
+    assert "fallback GUI started" in machine.succeed(as_owner("fallback-gui"))
+    machine.succeed(as_owner("check-gui"))
     cli("stop fallback")
     inside("test ! -e /.flatpak-info")
 
@@ -914,11 +867,16 @@ for desktop_id, query in [
     assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "updated"
     assert inside("cat ~/reload-version").strip() == "updated"
     assert inside("hello").strip() == "Hello, world!"
-    assert (
-        cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip() != old_shell
+    new_shell = next(
+        line.split("\t", 2)[2]
+        for line in machine.succeed(f"cat {installed_profile}/profile").splitlines()
+        if line.startswith("shell\t")
     )
     assert (
-        cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip() != old_shell
+        cli("shell check -- -c " + shlex.quote("printf '%s' \"$0\"")).strip() == new_shell
+    )
+    assert (
+        cli("shell check -- -c " + shlex.quote("printf '%s' \"$SHELL\"")).strip() == new_shell
     )
 
     # An explicit stop/start picks up the newly installed profile.

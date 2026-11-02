@@ -152,7 +152,7 @@ let
     let
       cfg = config;
       shellPackage = cfg.shell;
-      shell = builtins.baseNameOf (lib.getExe shellPackage);
+      packages = cfg.packages;
       home = homeConfig.home.homeDirectory;
       username = homeConfig.home.username;
       stateRoot =
@@ -231,163 +231,128 @@ let
         "--udp-ns"
         "none"
       ];
-      nixEnabled = cfg.nix || cfg.nixBuildLogs || hm != null;
-      hm =
-        if cfg.homeManagerModules == [ ] then
-          null
-        else
-          (home-manager.lib.homeManagerConfiguration {
-            inherit pkgs;
-            extraSpecialArgs = { inherit name; };
-            modules = cfg.homeManagerModules ++ [
-              {
-                home.username = lib.mkDefault username;
-                home.homeDirectory = lib.mkDefault home;
-                home.stateVersion = lib.mkDefault homeConfig.home.stateVersion;
-                systemd.user.startServices = lib.mkDefault true;
-              }
-            ];
-          }).config;
-      appPackage = pkgs.symlinkJoin {
-        name = "sandbox-apps-${name}";
-        paths =
-          cfg.packages
-          ++ [
-            shellPackage
-            pkgs.bashInteractive
-            pkgs.coreutils-full
-            pkgs.dbus
-            pkgs.systemd
-            pkgs.procps
-            pkgs.gnugrep
-            pkgs.ripgrep
-            pkgs.eza
-            pkgs.xdg-utils
-            pkgs.which
-            pkgs.strace
-            pkgs.wayland-utils
-            pkgs.vulkan-tools
-          ]
-          ++ lib.optionals (hm != null) hm.home.packages;
+      homeManagerEnabled = cfg.homeManagerModules != [ ];
+      nixEnabled =
+        cfg.nix || cfg.nixBuildLogs || homeManagerEnabled;
+
+      guestUtils = import "${pkgs.path}/nixos/lib/utils.nix" {
+        lib = pkgs.lib;
+        pkgs = container.pkgs;
+        config = container;
       };
-      # NixOS and Home Manager already generate the shell fragments that define
-      # a normal login environment. Use those as the canonical representation
-      # instead of maintaining a second list of recognized variable names.
-      sessionLoader = pkgs.writeShellScript "nook-load-session-environment-${name}" ''
-        nook_restore_nounset=
-        case $- in *u*) nook_restore_nounset=1; set +u ;; esac
 
-        export HOME=${lib.escapeShellArg home}
-        export USER=${lib.escapeShellArg username}
-        export LOGNAME=${lib.escapeShellArg username}
-        export XDG_RUNTIME_DIR=/run/user/${toString uid}
-        export XDG_STATE_HOME="''${XDG_STATE_HOME:-$HOME/.local/state}"
+      homeManagerServiceName =
+        if homeManagerEnabled then
+          "home-manager-${guestUtils.escapeSystemdPath username}.service"
+        else
+          "";
 
-        . /etc/set-environment
-        ${lib.optionalString (hm != null) ''
-          . ${hm.home.sessionVariablesPackage}/etc/profile.d/hm-session-vars.sh
-        ''}
+      # Home Manager is folded into the guest's own NixOS configuration: the
+      # guest imports home-manager's NixOS module (guestHomeManagerModule), so
+      # guest boots and compatible in-place guest switches apply the user
+      # configuration through NixOS' own activation path, and NixOS builds
+      # the per-user profile (/etc/profiles) from the merged package set. Nook
+      # keeps no separate activation pipeline and no merged app package.
+      guestHomeManagerModule =
+        { config, lib, pkgs, ... }:
+        let
+          # OpenSSH refuses to include files it does not own, and the guest's
+          # store mount is not ID-translated, so store symlinks must never
+          # reach ~/.ssh/config. Materialize the managed file instead, but
+          # replace an earlier materialization only when it still matches the
+          # previous generation, so user edits stay protected.
+          managesSshConfig = lib.any (
+            file: file.enable && file.target == ".ssh/config"
+          ) (builtins.attrValues config.home-manager.users.${username}.home.file);
+        in
+        {
+          imports = [ home-manager.nixosModules.home-manager ];
 
-        if [ -n "$nook_restore_nounset" ]; then set -u; fi
-        unset nook_restore_nounset
-      '';
-      # The user manager runs environment generators before any units. Start
-      # from a clean environment so host or supervisor variables cannot become
-      # ambient authority inside guest services, then print shell-quoted values
-      # in systemd.environment-generator(7) format.
-      sessionEnvironmentGenerator = pkgs.writeShellScript "nook-session-environment-generator-${name}" ''
-        exec ${pkgs.coreutils}/bin/env -i \
-          ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg ''
-                        . ${sessionLoader}
-                        exec ${pkgs.python3}/bin/python3 - <<'PY'
-            import os
-            import re
-            import shlex
+          home-manager = {
+            useGlobalPkgs = true;
+            useUserPackages = true;
+            users.${username} = {
+              imports = cfg.homeManagerModules;
+              home.stateVersion = lib.mkDefault homeConfig.home.stateVersion;
+              systemd.user.startServices = lib.mkDefault true;
+            };
+          };
+          systemd.services."home-manager-${guestUtils.escapeSystemdPath username}" =
+            let
+              # Wait for the user manager to finish its own startup: user@
+              # merely signals readiness while default.target units are still
+              # queuing, and HM's reloadSystemd must act on a running manager
+              # or user services never start.
+              waitUserManager = pkgs.writeShellScript "nook-wait-user-manager-${name}" ''
+                export XDG_RUNTIME_DIR=/run/user/${toString uid}
+                for _ in $(seq 1 300); do
+                  status=$(${pkgs.systemd}/bin/systemctl --user is-system-running 2>/dev/null || true)
+                  case "$status" in
+                    running | degraded) exit 0 ;;
+                  esac
+                  sleep 0.5
+                done
+                echo "Guest user manager did not become ready" >&2
+                exit 1
+              '';
+            in
+            {
+              # The upstream ordering (before user sessions) races the user
+              # manager this activation writes through. Run behind it instead;
+              # sandbox-ready waits for this unit, so entry stays closed until
+              # the activation settles.
+              before = lib.mkForce [ ];
+              requires = [ "user@${toString uid}.service" ];
+              after = [ "user@${toString uid}.service" ];
+            }
+            // {
+              serviceConfig.ExecStartPre = waitUserManager;
+            }
+            // lib.optionalAttrs managesSshConfig {
+              serviceConfig = {
+                ExecStartPre = [
+                  waitUserManager
+                  (pkgs.writeShellScript "nook-ssh-config-pre-${name}" ''
+                    stateHome="''${XDG_STATE_HOME:-$HOME/.local/state}"
+                    previous="$stateHome/home-manager/gcroots/current-home/home-files/.ssh/config"
+                    if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ] \
+                      && [ -f "$previous" ] \
+                      && ${pkgs.uutils-diffutils}/bin/cmp -s \
+                        "$HOME/.ssh/config" "$previous"; then
+                      rm "$HOME/.ssh/config"
+                    fi
+                  '')
+                ];
+                ExecStartPost = pkgs.writeShellScript "nook-ssh-config-post-${name}" ''
+                  if [ -L "$HOME/.ssh/config" ]; then
+                    target=$(readlink -f "$HOME/.ssh/config")
+                    temporary=$(mktemp "$HOME/.ssh/config.XXXXXX")
+                    cp "$target" "$temporary"
+                    chmod 600 "$temporary"
+                    mv -T "$temporary" "$HOME/.ssh/config"
+                  fi
+                '';
+              };
+            };
+        };
 
-            ignored = {"OLDPWD", "PWD", "SHLVL", "_"}
-            for variable, value in sorted(os.environ.items()):
-                if variable in ignored or variable.startswith("__"):
-                    continue
-                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
-                    print(f"{variable}={shlex.quote(value)}")
-            PY
-          ''}
-      '';
       activation = pkgs.writeShellScript "sandbox-activate-${name}" ''
         set -eu
-        . ${sessionLoader}
         status=$(${pkgs.systemd}/bin/systemctl --user is-system-running --wait || true)
-        case "$status" in running|degraded) ;; *) echo "User manager failed: $status" >&2; exit 1 ;; esac
+        case "$status" in
+          running | degraded) ;;
+          *) echo "User manager failed: $status" >&2; exit 1 ;;
+        esac
         ${lib.optionalString cfg.portals "${pkgs.systemd}/bin/systemctl --user start sandbox-portals.service"}
-        ${lib.optionalString (
-          cfg.inheritAppearance && !cfg.portals
-        ) "${pkgs.systemd}/bin/systemctl --user start sandbox-appearance.service"}
-        ${lib.optionalString (hm != null) ''
-          generation=${hm.home.activationPackage}
-          current_home="''${XDG_STATE_HOME:-$HOME/.local/state}/home-manager/gcroots/current-home"
-          completed_home="''${XDG_STATE_HOME:-$HOME/.local/state}/sandbox/home-generation"
-          # The user manager starts the installed services and recreates its
-          # runtime directory on every boot. Only configuration activation is
-          # cached. A separate success marker covers our SSH materialization
-          # too, and never lets a partially failed activation count as done.
-          if [ "$(cat "$completed_home" 2>/dev/null || true)" = "$generation" ] \
-              && [ "$(readlink -f "$current_home" || true)" = "$generation" ]; then
-            echo "Sandbox home generation unchanged; reusing its configuration"
-          else
-            # The old launcher mounted managed files over empty placeholders.
-            # Native Home Manager must replace those files with links. Enable
-            # its normal backup handling only for the first legacy migration,
-            # preserving user changes and refusing to overwrite earlier backups.
-            if [ -f "$HOME/.hm-generation" ] && [ ! -e "$current_home" ]; then
-              export HOME_MANAGER_BACKUP_EXT=pre-systemd
-            fi
-            # The public store is mounted without ID translation, so OpenSSH
-            # sees store files as nobody-owned. Materialize only HM's managed SSH
-            # config. Before reactivation, remove an earlier copy only when it
-            # still matches the previous generation; user edits remain protected.
-            old_ssh="''${XDG_STATE_HOME:-$HOME/.local/state}/home-manager/gcroots/current-home/home-files/.ssh/config"
-            if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ] \
-                && [ -f "$old_ssh" ] && ${pkgs.uutils-diffutils}/bin/cmp -s "$HOME/.ssh/config" "$old_ssh"; then
-              rm "$HOME/.ssh/config"
-            fi
-            PATH="${pkgs.nix}/bin:$PATH" ${hm.home.activationPackage}/activate
-            ${lib.optionalString
-              (lib.any (file: file.enable && file.target == ".ssh/config") (builtins.attrValues hm.home.file))
-              ''
-                if [ -L "$HOME/.ssh/config" ]; then
-                  target=$(readlink -f "$HOME/.ssh/config")
-                  temporary=$(mktemp "$HOME/.ssh/config.XXXXXX")
-                  cp "$target" "$temporary"
-                  chmod 600 "$temporary"
-                  mv -T "$temporary" "$HOME/.ssh/config"
-                fi
-              ''
-            }
-            mkdir -p "$(dirname "$completed_home")"
-            temporary=$(mktemp "$completed_home.XXXXXX")
-            printf '%s\n' "$generation" > "$temporary"
-            mv -T "$temporary" "$completed_home"
-          fi
-        ''}
+        ${lib.optionalString
+          (cfg.inheritAppearance && !cfg.portals)
+          "${pkgs.systemd}/bin/systemctl --user start sandbox-appearance.service"
+        }
       '';
-      homeManagerRecovery = pkgs.writeShellScriptBin "nook-home-manager" ''
-        set -eu
-        if [ "''${1:-}" != switch ]; then
-          echo "Usage: nook-home-manager switch [-b EXTENSION]" >&2
-          exit 2
-        fi
-        shift
-        if [ "$#" -eq 0 ]; then
-          exec ${activation}
-        fi
-        if [ "$#" -eq 2 ] && { [ "$1" = -b ] || [ "$1" = --backup-extension ]; }; then
-          case "$2" in *[!A-Za-z0-9._-]*|"") echo "Invalid backup extension" >&2; exit 2;; esac
-          export HOME_MANAGER_BACKUP_EXT="$2"
-          exec ${activation}
-        fi
-        echo "Usage: nook-home-manager switch [-b EXTENSION]" >&2
-        exit 2
-      '';
+
+      # Home Manager activation no longer has a recovery command: the guest's
+      # own home-manager service re-runs on the next switch, and colliding
+      # files fail activation (fail closed) until resolved by hand.
       nixLog = pkgs.writeShellScriptBin "nix-log" ''
         exec ${pkgs.nix}/bin/nix \
           --extra-experimental-features 'nix-command read-only-local-store' \
@@ -398,8 +363,8 @@ let
         set -eu
 
         # Preserve only values explicitly forwarded by the trusted entry
-        # helper. Static NixOS/Home Manager values are loaded next, forwarded
-        # caller values override them, and Nook's runtime invariants win last.
+        # helper. Static guest values load next, forwarded caller values
+        # override them, and Nook's runtime invariants win last.
         forwarded_names=()
         forwarded_values=()
         IFS=: read -r -a requested_names <<< "''${NOOK_FORWARDED_ENVIRONMENT:-}"
@@ -413,47 +378,44 @@ let
           fi
         done
 
-        . ${sessionLoader}
+        # Identity first: profile-relative exports in the evaluated guest
+        # environment expand $HOME and $USER at source time.
+        export HOME=${lib.escapeShellArg home}
+        export USER=${lib.escapeShellArg username}
+        export LOGNAME=${lib.escapeShellArg username}
+        export XDG_RUNTIME_DIR=/run/user/${toString uid}
+
+        # Static guest session values: NixOS generates them (system and
+        # folded Home Manager) in /etc/set-environment.
+        . /etc/set-environment
 
         for ((index = 0; index < ''${#forwarded_names[@]}; index++)); do
           export "''${forwarded_names[index]}=''${forwarded_values[index]}"
         done
         unset NOOK_FORWARDED_ENVIRONMENT
 
-        export HOME=${lib.escapeShellArg home}
-        export USER=${lib.escapeShellArg username}
-        export LOGNAME=${lib.escapeShellArg username}
-        export XDG_RUNTIME_DIR=/run/user/${toString uid}
-        export PATH=${sessionTools}/bin:/run/wrappers/bin:${appPackage}/bin:/run/current-system/sw/bin
-        export SHELL=${appPackage}/bin/${shell}
-        export WAYLAND_DISPLAY=wayland-0
-        export XDG_DATA_DIRS=${lib.escapeShellArg container.environment.variables.XDG_DATA_DIRS}
-        export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+        # Nook's wired session tools stay ahead of the profile PATH; the
+        # boundary never forwards a host display or system bus.
+        export PATH=${sessionTools}/bin:/run/wrappers/bin:$PATH
         unset DBUS_SYSTEM_BUS_ADDRESS DISPLAY XAUTHORITY
         ${lib.optionalString cfg.startX "export DISPLAY=:0"}
         ${lib.optionalString cfg.hostSessionBus "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/host/session-bus"}
-        ${lib.optionalString (
-          cfg.systemBusPolicies != { }
-        ) "export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/host/system-bus"}
+        ${lib.optionalString (cfg.systemBusPolicies != { }) "export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/host/system-bus"}
         exec "$@"
       '';
+
       sessionTools =
         pkgs.runCommand "sandbox-session-tools" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
           ''
             mkdir -p "$out/bin"
             for tool in systemctl systemd-run busctl systemd-analyze; do
-              if [ -x "${appPackage}/bin/$tool" ]; then
-                makeWrapper "${appPackage}/bin/$tool" "$out/bin/$tool" \
-                  --run 'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; unset DBUS_SYSTEM_BUS_ADDRESS'
-              fi
+              makeWrapper "${pkgs.systemd}/bin/$tool" "$out/bin/$tool" \
+                --run 'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; unset DBUS_SYSTEM_BUS_ADDRESS'
             done
             ${lib.optionalString cfg.podman ''
               makeWrapper "${pkgs.podman}/bin/podman" "$out/bin/podman" \
                 --run 'export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"; unset DBUS_SYSTEM_BUS_ADDRESS' \
                 --run 'if [ -z "''${TMPDIR:-}" ]; then export TMPDIR="$HOME/.local/share/containers/tmp"; install -d -m 0700 -- "$TMPDIR"; fi'
-            ''}
-            ${lib.optionalString (hm != null) ''
-              ln -s ${homeManagerRecovery}/bin/nook-home-manager "$out/bin/nook-home-manager"
             ''}
             ${lib.optionalString cfg.nixBuildLogs ''
               ln -s ${nixLog}/bin/nix-log "$out/bin/nix-log"
@@ -469,10 +431,9 @@ let
               uid
               gid
               home
-              appPackage
+              packages
               sessionTools
-              sessionLoader
-              sessionEnvironmentGenerator
+              homeManagerServiceName
               activation
               ;
             inherit shellPackage;
@@ -490,9 +451,19 @@ let
             inherit hostTimeZone;
             inherit launcher;
           };
-          modules = [ ./container.nix ] ++ cfg.nixosModules;
+          modules = [ ./container.nix ] ++ lib.optionals homeManagerEnabled [ guestHomeManagerModule ] ++ cfg.nixosModules;
         }).config;
-      rules = policies: lib.mapAttrsToList (n: action: "--${action}=${n}") policies;
+      # Everything the guest's per-user profile exposes from share/ mirrors
+      # this package; the host only needs application metadata (icons,
+      # desktop entries) from it.
+      appData = pkgs.buildEnv {
+        name = "sandbox-app-data-${name}";
+        paths = container.users.users.${username}.packages;
+        pathsToLink = [ "/share" ];
+        ignoreCollisions = true;
+      };
+
+            rules = policies: lib.mapAttrsToList (n: action: "--${action}=${n}") policies;
       # An application's extra policy (for example Signal's secrets access)
       # replaces an option default. Required portal rules must be added here,
       # otherwise that extra policy silently disables the selected portals.
@@ -564,10 +535,9 @@ let
         identityVersion = 2;
         supervisorContract = 2;
         supervisorExecutable = "${launcher}/bin/.nook-root-wrapped";
-        shell = "${appPackage}/bin/${shell}";
-        gui =
-          if cfg.guiEntryPoint == null then "" else "${appPackage}/${lib.removePrefix "/" cfg.guiEntryPoint}";
+        shell = "${lib.getExe shellPackage}";
         entry = entry;
+        homeManagerService = homeManagerServiceName;
         init = "${container.system.build.toplevel}/init";
         activation = activation;
         system = "${container.system.build.toplevel}";
@@ -578,6 +548,7 @@ let
         podman = if cfg.podman then 1 else 0;
         audio = if cfg.audio then 1 else 0;
         nix = if nixEnabled then 1 else 0;
+        nixBuildLogs = if cfg.nixBuildLogs then 1 else 0;
         hostSessionBus = if cfg.hostSessionBus then 1 else 0;
         portals = if cfg.portals then 1 else 0;
         inheritAppearance = if cfg.inheritAppearance then 1 else 0;
@@ -853,7 +824,7 @@ let
           readOnly = true;
           internal = true;
         };
-        _appPackage = lib.mkOption {
+        _appData = lib.mkOption {
           type = types.package;
           readOnly = true;
           internal = true;
@@ -870,7 +841,7 @@ let
         );
         _profile = profile;
         _container = container;
-        _appPackage = appPackage;
+        _appData = appData;
       };
     };
   cfg = outer.sandboxes;
@@ -892,7 +863,7 @@ let
   # the guest. Export their icon data explicitly so GNOME can resolve Icon=.
   icons = pkgs.buildEnv {
     name = "sandbox-icons";
-    paths = lib.mapAttrsToList (_: profile: profile._appPackage) cfg;
+    paths = lib.mapAttrsToList (_: profile: profile._appData) cfg;
     pathsToLink = [
       "/share/icons"
       "/share/pixmaps"
@@ -905,6 +876,7 @@ let
         nativeBuildInputs = [
           pkgs.makeWrapper
           pkgs.desktop-file-utils
+          pkgs.gawk
         ];
       }
       ''
@@ -940,31 +912,47 @@ let
               makeWrapper ${launcher}/bin/nk "$out/bin/nk-${name}" --set NOOK_PROFILES ${catalog} --add-flags "shell ${name} --"
               ln -s nk-${name} "$out/bin/sandbox-${name}"
               ${lib.optionalString (c.guiEntryPoint != null) ''
-                makeWrapper ${launcher}/bin/nk "$out/bin/${guiName}" --set NOOK_PROFILES ${catalog} --add-flags "gui ${name} --"
-                destination="$out/share/applications/${desktop}"
-                if [ -f "${c._appPackage}/share/applications/${desktop}" ]; then
-                  # Wayland app IDs / StartupWMClass resolve to the upstream
-                  # desktop ID. Renaming this file to the executable name breaks
-                  # reverse-DNS IDs such as info.mumble.Mumble in GNOME's overview.
-                  cp "${c._appPackage}/share/applications/${desktop}" "$destination"
-                else
-                  # A GUI entrypoint is sufficient to publish an application,
-                  # including custom scripts and packages without desktop data.
-                  cp "${fallbackDesktop}/share/applications/${desktop}" "$destination"
-                fi
-                chmod u+w "$destination"
-                sed -i "s|^Exec=[^ ]*|Exec=$out/bin/${guiName}|; /^X-Flatpak=/d" "$destination"
-                # Selecting a GUI entrypoint explicitly opts into application
-                # search. Upstream helper/desktop-specific visibility flags
-                # must not hide this launcher from GNOME.
-                desktop-file-edit --set-key=TryExec --set-value="$out/bin/${guiName}" \
-                  --set-key=DBusActivatable --set-value=false \
-                  --remove-key=Hidden --remove-key=NoDisplay \
-                  --remove-key=OnlyShowIn --remove-key=NotShowIn "$destination"
-                ${lib.optionalString (c.desktopNameSuffix != "") ''
-                  original_name=$(sed -n 's/^Name=//p' "$destination" | head -n1)
-                  desktop-file-edit --set-name="$original_name"${lib.escapeShellArg c.desktopNameSuffix} "$destination"
-                ''}
+              # The application executes inside the guest, against the running
+              # generation's per-user profile: upstream desktop entries launch
+              # through gio (arguments substitute per the desktop-entry spec,
+              # no X dependency), profiles without desktop data run the
+              # resolved per-user binary directly. The host copy keeps the
+              # upstream desktop ID for window matching; its Exec becomes the
+              # single sandbox launch command, and upstream desktop actions
+              # are dropped (their nested Exec lines would bypass the
+              # sandbox).
+              destination="$out/share/applications/${desktop}"
+              if [ -f "${c._appData}/share/applications/${desktop}" ]; then
+                guestCommand="${pkgs.glib}/bin/gio launch /etc/profiles/per-user/${homeConfig.home.username}/share/applications/${desktop}"
+                cp "${c._appData}/share/applications/${desktop}" "$destination"
+              else
+                guestCommand=/etc/profiles/per-user/${homeConfig.home.username}/bin/${baseNameOf c.guiEntryPoint}
+                cp "${fallbackDesktop}/share/applications/${desktop}" "$destination"
+              fi
+              chmod u+w "$destination"
+              awk -v exec="Exec=$out/bin/${guiName} %U" '
+                /^[ \t]*\[/ { skip = ($0 ~ /^\[Desktop Action/); if (!skip) print; next }
+                skip { next }
+                /^(Actions|X-Flatpak)[ \t]*=/ { next }
+                /^Exec[ \t]*=/ { print exec; next }
+                { print }
+              ' "$destination" > "$destination.tmp"
+              mv -T "$destination.tmp" "$destination"
+              # Selecting a GUI entrypoint opts into application search.
+              # Upstream visibility flags must not hide this launcher from
+              # GNOME.
+              desktop-file-edit --set-key=TryExec --set-value="$out/bin/${guiName}" \
+                --set-key=DBusActivatable --set-value=false \
+                --remove-key=Hidden --remove-key=NoDisplay \
+                --remove-key=OnlyShowIn --remove-key=NotShowIn "$destination"
+              ${lib.optionalString (c.desktopNameSuffix != "") ''
+                original_name=$(sed -n "s/^Name=//p" "$destination" | head -n1)
+                desktop-file-edit --set-name="$original_name"${lib.escapeShellArg c.desktopNameSuffix} "$destination"
+              ''}
+                makeWrapper ${launcher}/bin/nk "$out/bin/${guiName}" \
+                  --set NOOK_PROFILES ${catalog} \
+                  --add-flags "launch ${name} --" \
+                  --add-flags "$guestCommand"
               ''}
             ''
           ) cfg

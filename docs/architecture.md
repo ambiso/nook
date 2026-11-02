@@ -73,18 +73,17 @@ profile evaluation time (normally `~/.local/state`). Runtime changes to
 override `stateDirectory` with an absolute path; relative overrides remain
 home-relative for compatibility.
 
-Home Manager activates after the native guest user manager is ready. A success
-marker in `~/.local/state/sandbox/home-generation` caches activation by
-generation. Boot still recreates runtime sockets and starts user services.
-Fresh homes, changed generations, and failed activations run activation again.
-Use systemd services for work needed at every boot. Remove the success marker
-before restarting to force reactivation.
+Home Manager is part of the guest's own NixOS configuration: the guest imports
+home-manager's NixOS module, so activation runs behind the guest user manager as
+`home-manager-<user>.service`, and every guest switch or boot restarts it when
+the evaluated generation changed. Nook's readiness gate (`sandbox-ready`) waits
+for that unit, so entry stays closed until the user environment is complete.
+Use systemd services for work needed at every boot.
 
-Home Manager keeps its normal collision protection. If activation fails, the
-sandbox remains running in recovery mode and Nook prints the recovery steps.
-Enter it with `nk shell PROFILE`, then run
-`nook-home-manager switch -b backup` to preserve conflicts beside their original
-paths. Stop and relaunch the instance after activation succeeds.
+Home Manager keeps its normal collision protection: activation that would
+replace an unmanaged file fails, and the sandbox stays running in recovery
+mode with the conflicting file untouched. Resolve the file by hand, or set
+`home-manager.backupFileExtension` for the profile, then stop and relaunch.
 
 Podman image downloads normally stage compressed layers in `/var/tmp`, which is
 part of the guest's temporary root. In Podman-enabled profiles, Nook's command
@@ -323,11 +322,10 @@ The former Nix API now lives under `programs.nook`. Shared modules become
 `programs.nook.defaults`, and shell selection becomes a typed profile option.
 There is no required `pkgs.home-manager` overlay or shell module argument.
 
-For homes left by the older bwrap setup, initial Home Manager activation keeps
-conflicting files beside their originals with a `.pre-systemd` suffix. This
-migration is enabled only for a home carrying `.hm-generation` without a native
-Home Manager GC root; later activations retain normal collision checks. Stop any
-legacy launcher using a home before starting its native instance.
+Homes left by the older bwrap setup must be repaired by hand: activation fails
+closed on their placeholder files, keeping the conflicting paths (and their
+originals) untouched. Remove or move the pre-existing files once, then stop and
+relaunch the instance.
 
 ## Owner and guest identities
 

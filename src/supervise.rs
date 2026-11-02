@@ -1538,6 +1538,14 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             target: "/nix/var/nix/daemon-socket/socket".into(),
         });
     }
+    // The retained-build-log mount requires the daemon's log directory, which
+    // Nix creates lazily on the first logged build; create it here (same
+    // location and 0755 permissions nix would use) instead of failing to
+    // start on fresh hosts. The mount itself stays read-only.
+    if profile.flag("nixBuildLogs") && !Path::new("/nix/var/log/nix").is_dir() {
+        fs::create_dir_all("/nix/var/log/nix")?;
+    }
+
     // Host root is deliberately absent from owner-mapped bind mounts. It
     // cannot mkdir there (EOVERFLOW), so prepare targets as the host owner
     // before nspawn enters its mount setup. Do not weaken the UID mappings.
@@ -1658,7 +1666,9 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         .args(&nspawn_arguments)
         .env("NOTIFY_SOCKET", &notification_path);
     let mut child = nspawn.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(110);
+    // sandbox-ready's own start budget covers the folded Home Manager
+    // activation (five minutes); keep the supervisor bound behind it.
+    let deadline = Instant::now() + Duration::from_secs(330);
     let mut ready = false;
     let mut stopping_since = None;
     let mut forced_shutdown = false;
@@ -1955,28 +1965,37 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         print_command_output(&output, "guest NixOS switch")?;
     }
 
-    let new_activation = profile.immutable_store_path("activation")?;
-    let old_activation = running.immutable_store_path("activation")?;
-    if old_activation != new_activation {
-        let output = Command::new("systemd-run")
-            .arg("--user")
-            .arg("--machine")
-            .arg(format!("{}@{machine}", profile.get("username")?))
-            .arg("--wait")
-            .arg("--pipe")
-            .env("HOME", profile.get("home")?)
-            .env("USER", profile.get("username")?)
-            .env(
-                "XDG_RUNTIME_DIR",
-                format!("/run/user/{}", profile.guest_uid()?),
-            )
-            .env(
-                "DBUS_SESSION_BUS_ADDRESS",
-                format!("unix:path=/run/user/{}/bus", profile.guest_uid()?),
-            )
-            .arg(new_activation)
-            .output()?;
-        print_command_output(&output, "Home Manager activation")?;
+    // Home Manager activation runs inside the guest through its own
+    // home-manager unit, which the switch above restarts whenever the
+    // evaluated generation changes. Wait for a bounded terminal state so a
+    // re-pinned profile never reopens entry while the activation is
+    // unsettled, and keep the reload-failed marker on failure (fail closed).
+    let home_manager_service = profile
+        .values
+        .get("homeManagerService")
+        .map(String::as_str)
+        .unwrap_or("");
+    if !home_manager_service.is_empty() {
+        let deadline = Instant::now() + Duration::from_secs(330);
+        loop {
+            let output = Command::new("systemctl")
+                .args(["--machine", &machine, "show", home_manager_service])
+                .args(["--property=ActiveState", "--value"])
+                .output()?;
+            if !output.status.success() {
+                return Err("cannot query the guest Home Manager service".into());
+            }
+            match String::from_utf8_lossy(&output.stdout).trim() {
+                "active" | "inactive" => break,
+                "failed" => {
+                    return Err("Home Manager activation failed; entry stays closed".into())
+                }
+                _ if Instant::now() > deadline => {
+                    return Err("Home Manager activation timed out".into())
+                }
+                _ => thread::sleep(Duration::from_millis(200)),
+            }
+        }
     }
 
     command_ok(
