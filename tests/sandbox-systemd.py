@@ -42,7 +42,7 @@ with subtest("automatic host UID/GID allocation and independent guest IDs"):
     assert host_uid != 1000 and host_gid != 100
     machine.wait_for_unit(f"user@{host_uid}.service")
     command = "su - bob -c " + shlex.quote(
-        "nk launch dev -- sh -ec 'test $(id -u) = 1000; test $(id -g) = 100; echo owner-check > ~/owner-check'"
+        "nk launch dev -- sh -ec 'test $(id -u) = 1000; test $(id -g) = 100; test \"$NIX_REMOTE\" = dummy://; echo owner-check > ~/owner-check'"
     )
     machine.succeed(command)
     # Nook records Home Manager's previous-generation link under the same
