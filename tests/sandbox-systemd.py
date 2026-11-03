@@ -414,6 +414,7 @@ try:
     )
     cli("stop no-appearance")
     assert "activated" in inside("cat ~/activation-check")
+    assert inside("cat ~/module-arguments").strip() == "check alice"
     inside("systemctl --system is-active --quiet profile-module-check.service")
     machine.succeed(as_owner("test ! -x /run/nook-ualice-check-main/image"))
     machine.succeed("install -m600 /dev/null /home/alice/shared/host-root-secret")

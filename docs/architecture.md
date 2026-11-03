@@ -35,8 +35,9 @@ programs.nook = {
 
 The shell is a package with a main executable, such as `pkgs.fish` or
 `pkgs.bashInteractive`. It is configured per profile and needs no
-`extraSpecialArgs`. Guest Home Manager modules receive the profile's `name`
-argument for configuration that needs to identify its template.
+`extraSpecialArgs`. Guest Home Manager modules receive the profile's name as
+the `profileName` argument for configuration that needs to identify its
+template. Their `name` argument is Home Manager's own: the guest username.
 
 `nook.homeManagerModules.default` is also exported for standalone Home Manager
 use. It can generate profiles and launchers, but cannot install the privileged

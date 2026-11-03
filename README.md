@@ -220,7 +220,9 @@ Create `dev-home.nix` next to the file defining that profile:
 These settings apply inside dev, including its named and ephemeral instances.
 The host's Home Manager settings are not copied into the guest. Nook supplies
 the username, home directory, and state version automatically and activates the
-modules once per successful generation in each instance's home.
+modules once per successful generation in each instance's home. Guest modules
+receive the profile's name as `profileName`; their `name` argument is Home
+Manager's own and holds the guest username.
 
 Nix-enabled sandboxes can read the host's retained build logs by default:
 

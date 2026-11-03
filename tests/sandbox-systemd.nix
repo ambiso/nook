@@ -432,6 +432,12 @@ pkgs.testers.runNixOSTest {
           };
         };
         homeManagerModules = [
+          (
+            { name, profileName, ... }:
+            {
+              home.file.module-arguments.text = "${profileName} ${name}\n";
+            }
+          )
           {
             home.sessionVariables.NOOK_TEST_HOME_ENV = "from-home-manager";
             programs.ssh = {

@@ -273,6 +273,10 @@ let
           home-manager = {
             useGlobalPkgs = true;
             useUserPackages = true;
+            # HM's NixOS module binds `name` to the users.<name> key, i.e. the
+            # username, and reads it itself to resolve home.username. The
+            # profile name therefore travels under its own argument.
+            extraSpecialArgs.profileName = name;
             users.${username} = {
               imports = cfg.homeManagerModules;
               home.stateVersion = lib.mkDefault homeConfig.home.stateVersion;
