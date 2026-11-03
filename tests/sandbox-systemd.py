@@ -431,6 +431,13 @@ try:
         "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
         f"--service-type=exec {COREUTILS}/bin/test ! -r /shared/host-root-secret"
     )
+    # The guest user's Home Manager session variables (and PATH) stay out of
+    # other accounts' login shells, notably guest root's.
+    machine.succeed(
+        "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
+        "--service-type=exec /run/current-system/sw/bin/bash -lc "
+        + shlex.quote('test "$(id -u)" = 0; test -z "${NOOK_TEST_HOME_ENV:-}"; test -n "$NOOK_TEST_NIXOS_ENV"')
+    )
     machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
 
     # Machined is socket-activated. Starting another sandbox after both units

@@ -221,8 +221,12 @@ in
     ''
     + lib.optionalString (homeManagerServiceName != "") ''
       # Session variables declared through the folded Home Manager
-      # configuration, installed into the per-user profile.
-      . /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh
+      # configuration, installed into the per-user profile. They belong to
+      # the guest user only: other accounts, notably root, must not inherit
+      # its PATH (which may start with user-writable directories).
+      if [ "$(${pkgs.coreutils}/bin/id -u)" = ${toString uid} ]; then
+        . /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh
+      fi
     ''
   );
   # Application metadata must resolve for every app in the guest: gio
