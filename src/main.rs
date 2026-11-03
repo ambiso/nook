@@ -10,7 +10,7 @@ use nook::{
     config::{
         self, Profile, Result, catalog, valid_forwarded_environment_assignment, valid_instance,
     },
-    storage,
+    desktop, storage,
 };
 use serde::Serialize;
 use std::{
@@ -49,6 +49,10 @@ enum Action {
     Launch(Launch),
     /// Run the configured shell; used by nk-PROFILE wrappers
     Shell(Launch),
+    /// Launch a desktop entry by ID inside the main instance; used by exported launchers
+    LaunchDesktop(LaunchDesktop),
+    /// Export desktop entries created inside sandboxes as host launchers
+    SyncDesktopEntries(SyncDesktopEntries),
     /// Stop an instance; ephemeral homes are deleted on shutdown
     Stop(Stop),
     /// Permanently delete a stopped, named instance and its saved home
@@ -129,6 +133,23 @@ struct Launch {
     /// Command after --; GUI and shell wrappers accept application arguments
     #[arg(last = true)]
     command: Vec<String>,
+}
+
+#[derive(Args)]
+struct LaunchDesktop {
+    profile: String,
+    /// Desktop entry ID, resolved by the guest's XDG data directories
+    #[arg(value_parser = parse_desktop_id)]
+    id: String,
+    /// Files or URLs for the application
+    #[arg(last = true)]
+    arguments: Vec<String>,
+}
+
+#[derive(Args)]
+struct SyncDesktopEntries {
+    /// Only this profile; otherwise every profile, removing stale launchers
+    profile: Option<String>,
 }
 
 #[derive(Args)]
@@ -234,6 +255,14 @@ fn parse_name(value: &str) -> std::result::Result<String, String> {
     }
 }
 
+fn parse_desktop_id(value: &str) -> std::result::Result<String, String> {
+    if desktop::valid_desktop_id(value) {
+        Ok(value.to_owned())
+    } else {
+        Err("use a desktop entry file name such as org.example.App.desktop".into())
+    }
+}
+
 fn find_profile<'a>(profiles: &'a [Profile], name: &str) -> Result<&'a Profile> {
     profiles
         .iter()
@@ -333,6 +362,7 @@ fn start_instance(profile: &Profile, instance: &str) -> Result<()> {
 enum EntryPoint {
     Command,
     Shell,
+    Desktop,
 }
 
 fn privileged_helper(profile: &Profile) -> Result<PathBuf> {
@@ -369,10 +399,14 @@ fn launch(
     }
     let running = profile.running_profile(instance)?;
     let mut arguments = Vec::new();
-    let executable = match entry_point {
-        EntryPoint::Command => None,
-        EntryPoint::Shell => Some(running.get("shell")?),
-    };
+    let executable =
+        match entry_point {
+            EntryPoint::Command => None,
+            EntryPoint::Shell => Some(running.get("shell")?),
+            EntryPoint::Desktop => Some(running.get("desktopLauncher").map_err(
+                |_| "the running instance predates desktop entry launching; restart it",
+            )?),
+        };
     if let Some(executable) = executable {
         arguments.push(executable.to_owned());
     }
@@ -679,6 +713,16 @@ fn run() -> Result<i32> {
                 println!("Deleted {}/{instance}", profile.get("name")?);
             }
             Ok(0)
+        }
+        Action::SyncDesktopEntries(request) => {
+            desktop::sync(&profiles, request.profile.as_deref())?;
+            Ok(0)
+        }
+        Action::LaunchDesktop(request) => {
+            let profile = find_profile(&profiles, &request.profile)?;
+            let mut command = vec![request.id];
+            command.extend(request.arguments);
+            launch(profile, "main", &command, true, EntryPoint::Desktop)
         }
         action => {
             let (request, entry_point) = match action {

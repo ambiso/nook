@@ -631,6 +631,11 @@ let
         shell = "${lib.getExe shellPackage}";
         entry = entry;
         homeManagerService = homeManagerServiceName;
+        desktopLauncher = desktopLauncher;
+        exportDesktopEntries = if cfg.exportDesktopEntries then 1 else 0;
+        # Exported launchers outlive this generation: name the launcher by
+        # its stable profile path rather than a store path.
+        desktopExec = "${homeConfig.home.profileDirectory}/bin/nk";
         init = "${container.system.build.toplevel}/init";
         activation = activation;
         system = "${container.system.build.toplevel}";
@@ -741,6 +746,19 @@ let
           type = types.str;
           default = "";
           description = "Append to the displayed application name while preserving its desktop ID.";
+        };
+        exportDesktopEntries = lib.mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Export application entries that programs inside the main instance
+            create in their ~/.local/share/applications (for example games a
+            launcher installs) as host launchers, kept in sync while it runs.
+            The guest is untrusted: host launchers are generated from scratch
+            and only ask Nook to launch the entry's ID inside the sandbox. Only
+            sanitized names, registered categories, the window class and PNG
+            icons are taken from the guest. Requires a persistent main home.
+          '';
         };
         startX = lib.mkOption {
           type = types.bool;
@@ -932,6 +950,11 @@ let
           readOnly = true;
           internal = true;
         };
+        _guestApplications = lib.mkOption {
+          type = types.str;
+          readOnly = true;
+          internal = true;
+        };
       };
       config = {
         hostEnvironment = lib.mkBefore (
@@ -947,6 +970,7 @@ let
         _appData = appData;
         _applicationScope = applicationScope;
         _desktopLauncher = desktopLauncher;
+        _guestApplications = "${stateRoot}/instances/main/home/.local/share/applications";
       };
     };
   cfg = outer.sandboxes;
@@ -1147,10 +1171,45 @@ in
               assertion = forwardedConflicts == [ ];
               message = "programs.nook.sandboxes.${name}.hostEnvironment cannot forward Nook runtime variables: ${lib.concatStringsSep ", " forwardedConflicts}";
             }
+            {
+              assertion = sandbox.exportDesktopEntries -> sandbox.persistent;
+              message = "programs.nook.sandboxes.${name}.exportDesktopEntries requires a persistent main home.";
+            }
           ]
         ) cfg
       );
       home.packages = lib.mkIf (cfg != { }) [ wrapper ];
+      # Keep host launchers for guest-created desktop entries in sync: on
+      # login and after each switch (which also removes launchers of profiles
+      # that stopped exporting), and whenever an exporting guest changes its
+      # applications directory. The sync reads guest files as untrusted data.
+      systemd.user.services.nook-desktop-entries = lib.mkIf (cfg != { }) {
+        Unit = {
+          Description = "Export desktop entries created inside Nook sandboxes";
+          X-Restart-Triggers = [ "${catalog}" ];
+          # Guests decide how often their directories change. Instead of
+          # systemd's start limit, which would stop syncing until the next
+          # login, debounce: changes during the pause merge into one sync.
+          StartLimitIntervalSec = 0;
+        };
+        Service = {
+          Type = "oneshot";
+          ExecStartPre = "${pkgs.coreutils}/bin/sleep 1";
+          ExecStart = "${wrapper}/bin/nk sync-desktop-entries";
+        };
+        Install.WantedBy = [ "default.target" ];
+      };
+      systemd.user.paths = lib.mapAttrs' (
+        name: c:
+        lib.nameValuePair "nook-desktop-entries-${name}" {
+          Unit.Description = "Watch desktop entries created inside the ${name} sandbox";
+          Path = {
+            PathChanged = c._guestApplications;
+            Unit = "nook-desktop-entries.service";
+          };
+          Install.WantedBy = [ "paths.target" ];
+        }
+      ) (lib.filterAttrs (_: c: c.exportDesktopEntries) cfg);
       # GNOME watches the user applications directory. Link each entry there
       # through Home Manager so activating a new Nix profile also produces a
       # file change in that directory, rather than only swapping a profile link.

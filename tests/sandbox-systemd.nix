@@ -139,6 +139,12 @@ let
     DBusActivatable=true
     DESKTOP
   '';
+  # Installed into the guest's packages; its desktop entry is created at
+  # runtime inside the guest, as a game launcher would.
+  exportedGame = pkgs.runCommand "sandbox-exported-game" { } ''
+    mkdir -p "$out/bin"
+    ln -s ${longRunningGui "exported-game"} "$out/bin/exported-game"
+  '';
   # Launched by spawning its Exec line, like most applications.
   plainGuiApp = pkgs.runCommand "sandbox-plain-gui-test" { } ''
     mkdir -p "$out/bin" "$out/share/applications"
@@ -572,6 +578,13 @@ pkgs.testers.runNixOSTest {
         guiEntryPoint = "/bin/plain-gui";
         desktopFile = "org.example.PlainGui.desktop";
         packages = [ plainGuiApp ];
+      };
+      programs.nook.sandboxes.exporter = {
+        gpu = false;
+        audio = false;
+        network = false;
+        exportDesktopEntries = true;
+        packages = [ exportedGame ];
       };
       programs.nook.sandboxes.dbus-gui = {
         persistent = false;

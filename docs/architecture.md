@@ -214,6 +214,34 @@ selects an upstream desktop ID when it differs from the executable's name;
 D-Bus desktop activation is disabled so launches go through Nook. Named instances
 do not export additional desktop files and may be grouped together by the shell.
 
+Launchers pass only a desktop entry ID into the guest. A guest-side launcher
+resolves it through the guest's XDG data directories, so what an entry runs is
+decided inside the sandbox. Entries are spawned in their own `app.slice` scope
+and therefore outlive the short-lived entry command; D-Bus activatable entries
+are activated on the guest's own session bus, where their services are
+installed, even in profiles whose commands use the host's proxied bus.
+
+`exportDesktopEntries` extends this to entries the guest creates at runtime.
+The host user's `nk sync-desktop-entries` reads the main instance's
+`~/.local/share/applications` as untrusted data: through directory descriptors
+with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV)`, regular
+files only, non-blocking and size-limited. Each host launcher is written from
+scratch under `applications/nook-sandbox/PROFILE/`, so its desktop ID is
+namespaced and cannot shadow a host application. Its `Exec` and `TryExec` are
+fixed to the stable `nk launch-desktop PROFILE ID`, with the ID restricted to a
+plain file name. Only the entry's name and comment (decoded, stripped of control
+and invisible formatting characters, length-limited, and suffixed with the
+profile name), registered main categories, a validated `StartupWMClass`, and a
+PNG icon named by the entry and found in the guest's hicolor theme are used.
+The icon is decoded in-process by the pure-Rust `png` crate, within dimension and
+allocation limits, and re-encoded as 8-bit RGBA with only header, image data
+and end chunks, so the desktop's image loaders parse Nook's encoding rather
+than guest bytes; it is stored in a host-owned directory and referenced by
+absolute path. MIME and URL handler registration, actions, D-Bus activation,
+working directories, terminal entries and all other keys are dropped. A user
+path unit re-runs the sync when that directory changes, and every sync removes
+launchers whose guest entries, or profiles, are gone.
+
 Host appearance settings come through the Settings portal by default, including
 live updates. This does not enable file dialogs or screen capture. Set
 `inheritAppearance = false` to disable the appearance connection when interactive

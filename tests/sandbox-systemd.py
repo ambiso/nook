@@ -635,6 +635,140 @@ for desktop_id, query in [
         )
     cli("stop plain-gui")
     cli("stop dbus-gui")
+
+    with subtest("guest-created desktop entries become sanitized host launchers"):
+        # The guest is untrusted: it tries to smuggle host-side behaviour through
+        # its entries, to spoof the displayed name, and to make the host read host
+        # files through symlinks.
+        # A 1x1 RGBA PNG carrying a guest text chunk.
+        png = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEnRFWHRDb21tZW50AGd1ZXN0LXRl"
+            "eHRw9v+uAAAADUlEQVR4nGNgZGJmAQAAGQAL51pGpAAAAABJRU5ErkJggg=="
+        )
+        game = [
+            "[Desktop Entry]",
+            "Type=Application",
+            "Name=Game\\nExec=/bin/sh\u202e",
+            "Comment=Installed inside the sandbox",
+            "Exec=exported-game",
+            "Icon=org.example.Game",
+            "Categories=Game;X-Evil;",
+            "StartupWMClass=org.example.Game",
+            "MimeType=x-scheme-handler/https;",
+            "Actions=shell;",
+            "[Desktop Action shell]",
+            "Exec=/bin/sh",
+        ]
+        simple = lambda name, icon: [
+            "[Desktop Entry]",
+            "Type=Application",
+            f"Name={name}",
+            "Exec=exported-game",
+            f"Icon={icon}",
+        ]
+        files = {
+            "org.example.Game.desktop": game,
+            "org.example.Linked.desktop": simple("Linked", "org.example.Linked"),
+            "hidden.desktop": simple("Hidden", "x") + ["NoDisplay=true"],
+            "bad name.desktop": simple("Bad", "x"),
+        }
+        script = [
+            "applications=~/.local/share/applications",
+            "icons=~/.local/share/icons/hicolor/64x64/apps",
+            'mkdir -p "$applications" "$icons"',
+            f'echo {png} | base64 -d > "$icons/org.example.Game.png"',
+            'ln -s /etc/passwd "$icons/org.example.Linked.png"',
+            "printf '%s\\n' " + " ".join(shlex.quote(line) for line in simple("Outside", "x"))
+            + " > ~/outside.desktop",
+            'ln -s ~/outside.desktop "$applications/leak.desktop"',
+            'ln -s /etc/static/os-release "$applications/host.desktop"',
+        ] + [
+            "printf '%s\\n' "
+            + " ".join(shlex.quote(line) for line in lines)
+            + f' > "$applications/{name}"'
+            for name, lines in files.items()
+        ]
+        # At boot, Home Manager linked its user units after this lingering
+        # user's manager had started; load and start the watch explicitly.
+        user_systemctl = "XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user"
+        machine.succeed(as_owner(f"{user_systemctl} daemon-reload"))
+        machine.succeed(as_owner(f"{user_systemctl} start nook-desktop-entries-exporter.path"))
+        cli("launch exporter -- bash -euc " + shlex.quote("\n".join(script)))
+
+        exported = "/home/alice/.local/share/applications/nook-sandbox/exporter"
+        icons = "/home/alice/.local/share/nook-sandbox/icons/exporter"
+        # The host path unit notices the guest's change and syncs.
+        machine.wait_until_succeeds(as_owner(f"test -f {exported}/org.example.Game.desktop"), timeout=60)
+        machine.wait_until_succeeds(as_owner(f"test -f {exported}/org.example.Linked.desktop"), timeout=60)
+        entry = machine.succeed(as_owner(f"cat {exported}/org.example.Game.desktop"))
+        lines = entry.splitlines()
+        assert "Name=Game Exec=/bin/sh (exporter)" in lines, entry
+        assert "Comment=Installed inside the sandbox" in lines, entry
+        assert "Categories=Game;" in lines, entry
+        assert "StartupWMClass=org.example.Game" in lines, entry
+        assert f"Icon={icons}/org.example.Game.png" in lines, entry
+        exec_lines = [line for line in lines if line.startswith("Exec=")]
+        assert exec_lines == [
+            "Exec=/etc/profiles/per-user/alice/bin/nk launch-desktop exporter org.example.Game.desktop"
+        ], entry
+        for forbidden in ["MimeType", "Actions", "Desktop Action", "/bin/sh\n", "DBusActivatable"]:
+            assert forbidden not in entry.replace("Name=Game Exec=/bin/sh", ""), (forbidden, entry)
+        machine.succeed(as_owner(f"desktop-file-validate {exported}/org.example.Game.desktop"))
+        # The icon is a fresh encoding: a PNG, but none of the guest's bytes
+        # beyond its pixels.
+        icon = f"{icons}/org.example.Game.png"
+        machine.succeed(as_owner(f"head -c 8 {icon} | od -An -tx1 | grep -Fq '89 50 4e 47 0d 0a 1a 0a'"))
+        machine.fail(as_owner(f"grep -aq guest-text {icon}"))
+        machine.fail(as_owner(f"echo {png} | base64 -d | cmp -s - {icon}"))
+        # A symlinked icon is not followed; the launcher gets a generic icon.
+        machine.succeed(
+            as_owner(f"grep -Fx Icon=application-x-executable {exported}/org.example.Linked.desktop")
+        )
+        machine.succeed(as_owner(f"test ! -e {icons}/org.example.Linked.png"))
+        for name in ["leak.desktop", "host.desktop", "hidden.desktop", "bad name.desktop"]:
+            machine.succeed(as_owner(f"test ! -e {shlex.quote(exported + '/' + name)}"))
+        # GNOME finds the launcher under a namespaced desktop ID.
+        machine.succeed(
+            as_owner(
+                f"{DESKTOP_PYTHON} -c "
+                + shlex.quote(
+                    "import gi; gi.require_version('Gio', '2.0'); from gi.repository import Gio; "
+                    "assert Gio.DesktopAppInfo.new('nook-sandbox-exporter-org.example.Game.desktop')"
+                )
+            )
+        )
+
+        # The launcher's Exec runs the entry inside the sandbox.
+        machine.succeed(
+            as_owner(
+                "WAYLAND_DISPLAY=wayland-test "
+                "/etc/profiles/per-user/alice/bin/nk launch-desktop exporter org.example.Game.desktop"
+                " > /dev/null 2>&1"
+            )
+        )
+        cli(
+            "launch exporter -- bash -euc "
+            + shlex.quote(
+                """
+                pid_file="$XDG_RUNTIME_DIR/exported-game.pid"
+                for _ in $(seq 50); do
+                  test -s "$pid_file" && break
+                  sleep 0.2
+                done
+                sleep 2
+                kill -0 "$(cat "$pid_file")"
+                kill "$(cat "$pid_file")"
+                """
+            )
+        )
+
+        # Removing the guest entry removes its launcher and icon.
+        cli("launch exporter -- rm ~/.local/share/applications/org.example.Game.desktop")
+        machine.wait_until_succeeds(
+            as_owner(f"test ! -e {exported}/org.example.Game.desktop"), timeout=60
+        )
+        machine.succeed(as_owner(f"test ! -e {icons}/org.example.Game.png"))
+        cli("stop exporter")
     cli("stop fallback")
     inside("test ! -e /.flatpak-info")
 
