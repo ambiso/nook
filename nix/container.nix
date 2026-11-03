@@ -17,6 +17,7 @@
   portals,
   inheritAppearance,
   nixBuildLogs,
+  nixEnabled,
   dnsSearch,
   launcher,
   devicePatterns,
@@ -55,6 +56,14 @@ let
       "${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}"
       "/run/current-system/sw/share"
     ];
+  }
+  # Without a brokered host daemon, the container default (NIX_REMOTE=daemon
+  # from NixOS container-config) points at a socket that does not exist. Point
+  # nix at an ephemeral writable store under the guest runtime instead:
+  # evaluation and HM's activation sanity check succeed without any daemon,
+  # and nothing reaches the host store through it.
+  // lib.optionalAttrs (!nixEnabled) {
+    NIX_REMOTE = lib.mkOverride 60 "local?root=/run/user/${toString uid}/nix-store";
   };
 in
 {

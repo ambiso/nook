@@ -232,8 +232,7 @@ let
         "none"
       ];
       homeManagerEnabled = cfg.homeManagerModules != [ ];
-      nixEnabled =
-        cfg.nix || cfg.nixBuildLogs || homeManagerEnabled;
+      nixEnabled = cfg.nix || cfg.nixBuildLogs;
 
       guestUtils = import "${pkgs.path}/nixos/lib/utils.nix" {
         lib = pkgs.lib;
@@ -260,7 +259,10 @@ let
           # store mount is not ID-translated, so store symlinks must never
           # reach ~/.ssh/config. Materialize the managed file instead, but
           # replace an earlier materialization only when it still matches the
-          # previous generation, so user edits stay protected.
+          # previous generation, so user edits stay protected. The previous
+          # generation's content is anchored by a plain copy that this unit's
+          # ExecStartPost maintains last, because HM's own gcroots are
+          # disabled (the generation is pinned by the system closure).
           managesSshConfig = lib.any (
             file: file.enable && file.target == ".ssh/config"
           ) (builtins.attrValues config.home-manager.users.${username}.home.file);
@@ -274,6 +276,11 @@ let
             users.${username} = {
               imports = cfg.homeManagerModules;
               home.stateVersion = lib.mkDefault homeConfig.home.stateVersion;
+              # The generation is pinned via the guest system closure (the
+              # home-manager service ExecStart), which the host pins in turn
+              # through the profile; HM's own GC roots would be redundant
+              # store writes requiring daemon access in the guest.
+              home.activationGenerateGcRoot = lib.mkDefault false;
               systemd.user.startServices = lib.mkDefault true;
             };
           };
@@ -314,7 +321,7 @@ let
                   waitUserManager
                   (pkgs.writeShellScript "nook-ssh-config-pre-${name}" ''
                     stateHome="''${XDG_STATE_HOME:-$HOME/.local/state}"
-                    previous="$stateHome/home-manager/gcroots/current-home/home-files/.ssh/config"
+                    previous="$stateHome/nook/ssh-config-last-shipped"
                     if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ] \
                       && [ -f "$previous" ] \
                       && ${pkgs.uutils-diffutils}/bin/cmp -s \
@@ -324,12 +331,18 @@ let
                   '')
                 ];
                 ExecStartPost = pkgs.writeShellScript "nook-ssh-config-post-${name}" ''
+                  stateHome="''${XDG_STATE_HOME:-$HOME/.local/state}"
+                  previous="$stateHome/nook/ssh-config-last-shipped"
                   if [ -L "$HOME/.ssh/config" ]; then
                     target=$(readlink -f "$HOME/.ssh/config")
                     temporary=$(mktemp "$HOME/.ssh/config.XXXXXX")
                     cp "$target" "$temporary"
                     chmod 600 "$temporary"
                     mv -T "$temporary" "$HOME/.ssh/config"
+                  fi
+                  if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ]; then
+                    mkdir -p "$(dirname "$previous")"
+                    cp "$HOME/.ssh/config" "$previous"
                   fi
                 '';
               };
@@ -434,6 +447,7 @@ let
               packages
               sessionTools
               homeManagerServiceName
+              nixEnabled
               activation
               ;
             inherit shellPackage;
