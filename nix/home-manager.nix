@@ -259,13 +259,22 @@ let
           # store mount is not ID-translated, so store symlinks must never
           # reach ~/.ssh/config. Materialize the managed file instead, but
           # replace an earlier materialization only when it still matches the
-          # previous generation, so user edits stay protected. The previous
-          # generation's content is anchored by a plain copy that this unit's
-          # ExecStartPost maintains last, because HM's own gcroots are
-          # disabled (the generation is pinned by the system closure).
+          # previous generation, so user edits stay protected.
           managesSshConfig = lib.any (
             file: file.enable && file.target == ".ssh/config"
-          ) (builtins.attrValues config.home-manager.users.${username}.home.file);
+          ) (builtins.attrValues guestHome.home.file);
+          guestHome = config.home-manager.users.${username};
+          # HM finds the previous generation through this link. With its GC
+          # roots disabled, HM no longer writes it, which would silently stop
+          # orphan-link cleanup and the systemd and dconf diffs between
+          # generations. Record it after a successful activation, as HM does,
+          # but as a plain link: the system closure already pins it.
+          currentGeneration = ''"''${XDG_STATE_HOME:-$HOME/.local/state}/home-manager/gcroots/current-home"'';
+          # HM resolves XDG_STATE_HOME in a login shell, from the evaluated
+          # session environment (including its own session variables). The
+          # unit's scripts must resolve it identically, or a custom state
+          # home would put the link where HM never reads it.
+          loadSessionEnvironment = ". /etc/set-environment";
         in
         {
           imports = [ home-manager.nixosModules.home-manager ];
@@ -283,7 +292,8 @@ let
               # The generation is pinned via the guest system closure (the
               # home-manager service ExecStart), which the host pins in turn
               # through the profile; HM's own GC roots would be redundant
-              # store writes requiring daemon access in the guest.
+              # store writes requiring daemon access in the guest. The unit
+              # still records the generation link HM reads (currentGeneration).
               home.activationGenerateGcRoot = lib.mkDefault false;
               systemd.user.startServices = lib.mkDefault true;
             };
@@ -315,40 +325,40 @@ let
               before = lib.mkForce [ ];
               requires = [ "user@${toString uid}.service" ];
               after = [ "user@${toString uid}.service" ];
-            }
-            // {
-              serviceConfig.ExecStartPre = waitUserManager;
-            }
-            // lib.optionalAttrs managesSshConfig {
               serviceConfig = {
                 ExecStartPre = [
                   waitUserManager
-                  (pkgs.writeShellScript "nook-ssh-config-pre-${name}" ''
-                    stateHome="''${XDG_STATE_HOME:-$HOME/.local/state}"
-                    previous="$stateHome/nook/ssh-config-last-shipped"
+                ]
+                ++ lib.optional managesSshConfig (
+                  pkgs.writeShellScript "nook-ssh-config-pre-${name}" ''
+                    ${loadSessionEnvironment}
+                    previous=${currentGeneration}/home-files/.ssh/config
                     if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ] \
                       && [ -f "$previous" ] \
                       && ${pkgs.uutils-diffutils}/bin/cmp -s \
                         "$HOME/.ssh/config" "$previous"; then
                       rm "$HOME/.ssh/config"
                     fi
+                  ''
+                );
+                ExecStartPost = [
+                  (pkgs.writeShellScript "nook-hm-current-generation-${name}" ''
+                    ${loadSessionEnvironment}
+                    mkdir -p "$(dirname ${currentGeneration})"
+                    ln -sfnT ${guestHome.home.activationPackage} ${currentGeneration}
                   '')
-                ];
-                ExecStartPost = pkgs.writeShellScript "nook-ssh-config-post-${name}" ''
-                  stateHome="''${XDG_STATE_HOME:-$HOME/.local/state}"
-                  previous="$stateHome/nook/ssh-config-last-shipped"
-                  if [ -L "$HOME/.ssh/config" ]; then
-                    target=$(readlink -f "$HOME/.ssh/config")
-                    temporary=$(mktemp "$HOME/.ssh/config.XXXXXX")
-                    cp "$target" "$temporary"
-                    chmod 600 "$temporary"
-                    mv -T "$temporary" "$HOME/.ssh/config"
-                  fi
-                  if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ]; then
-                    mkdir -p "$(dirname "$previous")"
-                    cp "$HOME/.ssh/config" "$previous"
-                  fi
-                '';
+                ]
+                ++ lib.optional managesSshConfig (
+                  pkgs.writeShellScript "nook-ssh-config-post-${name}" ''
+                    if [ -L "$HOME/.ssh/config" ]; then
+                      target=$(readlink -f "$HOME/.ssh/config")
+                      temporary=$(mktemp "$HOME/.ssh/config.XXXXXX")
+                      cp "$target" "$temporary"
+                      chmod 600 "$temporary"
+                      mv -T "$temporary" "$HOME/.ssh/config"
+                    fi
+                  ''
+                );
               };
             };
         };

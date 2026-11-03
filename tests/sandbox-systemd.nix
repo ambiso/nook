@@ -128,6 +128,8 @@ pkgs.testers.runNixOSTest {
           homeManagerModules = [
             {
               home.file.reload-version.text = "updated\n";
+              # A file dropped from the configuration must lose its link.
+              home.file.orphan-check.enable = false;
               home.packages = [ pkgs.hello ];
             }
           ];
@@ -208,13 +210,20 @@ pkgs.testers.runNixOSTest {
           hostSessionBus = false;
           inheritAppearance = false;
           homeManagerModules = [
-            {
-              dconf.settings."org/gnome/desktop/interface" = {
-                gtk-theme = "Adwaita-dark";
-                icon-theme = "Adwaita";
-                color-scheme = "prefer-dark";
-              };
-            }
+            (
+              { config, ... }:
+              {
+                dconf.settings."org/gnome/desktop/interface" = {
+                  gtk-theme = "Adwaita-dark";
+                  icon-theme = "Adwaita";
+                  color-scheme = "prefer-dark";
+                };
+                # Home Manager must find its previous generation under a
+                # custom state home as well.
+                xdg.enable = true;
+                xdg.stateHome = "${config.home.homeDirectory}/.state";
+              }
+            )
           ];
         };
       };
@@ -451,6 +460,7 @@ pkgs.testers.runNixOSTest {
               color-scheme = "prefer-dark";
             };
             home.file.activation-check.text = "activated\n";
+            home.file.orphan-check.text = "removed by the update\n";
             home.file.legacy-edit.text = "new managed configuration\n";
             home.file.legacy-directory.source = pkgs.writeTextDir "managed" "managed directory\n";
             systemd.user.services.postgres = {

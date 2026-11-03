@@ -45,6 +45,14 @@ with subtest("automatic host UID/GID allocation and independent guest IDs"):
         "nk launch dev -- sh -ec 'test $(id -u) = 1000; test $(id -g) = 100; echo owner-check > ~/owner-check'"
     )
     machine.succeed(command)
+    # Nook records Home Manager's previous-generation link under the same
+    # (custom) state home that Home Manager reads it from.
+    machine.succeed(
+        "test -L /home/bob/.sandbox/dev/instances/main/home/.state/home-manager/gcroots/current-home"
+    )
+    machine.succeed(
+        "test ! -e /home/bob/.sandbox/dev/instances/main/home/.local/state/home-manager/gcroots/current-home"
+    )
     machine.succeed(
         f"test $(stat -c %u /home/bob/.sandbox/dev/instances/main/home/owner-check) = {host_uid}"
     )
@@ -414,6 +422,7 @@ try:
     )
     cli("stop no-appearance")
     assert "activated" in inside("cat ~/activation-check")
+    inside("test -L ~/orphan-check")
     assert inside("cat ~/module-arguments").strip() == "check alice"
     inside("systemctl --system is-active --quiet profile-module-check.service")
     machine.succeed(as_owner("test ! -x /run/nook-ualice-check-main/image"))
@@ -867,6 +876,7 @@ for desktop_id, query in [
     ).strip() == new_system
     assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "updated"
     assert inside("cat ~/reload-version").strip() == "updated"
+    inside("test ! -e ~/orphan-check && test ! -L ~/orphan-check")
     assert inside("hello").strip() == "Hello, world!"
     new_shell = next(
         line.split("\t", 2)[2]
