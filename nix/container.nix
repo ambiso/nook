@@ -227,8 +227,9 @@ in
   );
   # Application metadata must resolve for every app in the guest: gio
   # launches the desktop entries the per-user profile exposes, and GTK/GIO
-  # resolve icons against the same data dirs. Link them deterministically
-  # instead of relying on incidental module contributions.
+  # resolve icons against the same data dirs. NixOS's xdg.menus and xdg.icons
+  # modules link these by default; pin them so a guest module disabling those
+  # cannot break `nk` GUI launches.
   environment.pathsToLink = [
     "/share/applications"
     "/share/pixmaps"
