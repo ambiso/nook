@@ -666,11 +666,13 @@ for desktop_id, query in [
             "Exec=exported-game",
             f"Icon={icon}",
         ]
+        # Launchers such as Steam name their entries after the application.
+        game_id = "Portal 2.desktop"
         files = {
-            "org.example.Game.desktop": game,
+            game_id: game,
             "org.example.Linked.desktop": simple("Linked", "org.example.Linked"),
             "hidden.desktop": simple("Hidden", "x") + ["NoDisplay=true"],
-            "bad name.desktop": simple("Bad", "x"),
+            ".dotted.desktop": simple("Dotted", "x"),
         }
         script = [
             "applications=~/.local/share/applications",
@@ -685,9 +687,25 @@ for desktop_id, query in [
         ] + [
             "printf '%s\\n' "
             + " ".join(shlex.quote(line) for line in lines)
-            + f' > "$applications/{name}"'
+            + f" > \"$applications\"/{shlex.quote(name)}"
             for name, lines in files.items()
         ]
+
+        def host_stem(profile, desktop_id):
+            # Mirrors the host's naming: profile, "_", a readable part, and a
+            # 64-bit FNV-1a hash of the guest's file name.
+            digest = 0xCBF29CE484222325
+            for byte in desktop_id.encode():
+                digest = ((digest ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+            readable = ""
+            for character in desktop_id.removesuffix(".desktop"):
+                if (character.isascii() and character.isalnum()) or character == ".":
+                    readable += character
+                elif not readable.endswith("-"):
+                    readable += "-"
+            readable = readable.strip("-.") or "entry"
+            return f"{profile}_{readable}-{digest:016x}"
+
         # At boot, Home Manager linked its user units after this lingering
         # user's manager had started; load and start the watch explicitly.
         user_systemctl = "XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user"
@@ -695,56 +713,67 @@ for desktop_id, query in [
         machine.succeed(as_owner(f"{user_systemctl} start nook-desktop-entries-exporter.path"))
         cli("launch exporter -- bash -euc " + shlex.quote("\n".join(script)))
 
-        exported = "/home/alice/.local/share/applications/nook-sandbox/exporter"
+        exported = "/home/alice/.local/share/applications/nook-sandbox"
         icons = "/home/alice/.local/share/nook-sandbox/icons/exporter"
+        game_stem = host_stem("exporter", game_id)
+        linked_stem = host_stem("exporter", "org.example.Linked.desktop")
+        game_entry = f"{exported}/{game_stem}.desktop"
         # The host path unit notices the guest's change and syncs.
-        machine.wait_until_succeeds(as_owner(f"test -f {exported}/org.example.Game.desktop"), timeout=60)
-        machine.wait_until_succeeds(as_owner(f"test -f {exported}/org.example.Linked.desktop"), timeout=60)
-        entry = machine.succeed(as_owner(f"cat {exported}/org.example.Game.desktop"))
+        machine.wait_until_succeeds(as_owner(f"test -f {game_entry}"), timeout=60)
+        machine.wait_until_succeeds(
+            as_owner(f"test -f {exported}/{linked_stem}.desktop"), timeout=60
+        )
+        entry = machine.succeed(as_owner(f"cat {game_entry}"))
         lines = entry.splitlines()
-        assert "Name=Game Exec=/bin/sh (exporter)" in lines, entry
+        assert "Name=[exporter] Game Exec=/bin/sh" in lines, entry
         assert "Comment=Installed inside the sandbox" in lines, entry
         assert "Categories=Game;" in lines, entry
         assert "StartupWMClass=org.example.Game" in lines, entry
-        assert f"Icon={icons}/org.example.Game.png" in lines, entry
+        assert f"Icon={icons}/{game_stem}.png" in lines, entry
+        launch_command = (
+            "/etc/profiles/per-user/alice/bin/nk launch-desktop exporter "
+            f"--encoded-id {game_id.encode().hex()}"
+        )
         exec_lines = [line for line in lines if line.startswith("Exec=")]
-        assert exec_lines == [
-            "Exec=/etc/profiles/per-user/alice/bin/nk launch-desktop exporter org.example.Game.desktop"
-        ], entry
+        assert exec_lines == [f"Exec={launch_command}"], entry
         for forbidden in ["MimeType", "Actions", "Desktop Action", "/bin/sh\n", "DBusActivatable"]:
-            assert forbidden not in entry.replace("Name=Game Exec=/bin/sh", ""), (forbidden, entry)
-        machine.succeed(as_owner(f"desktop-file-validate {exported}/org.example.Game.desktop"))
+            assert forbidden not in entry.replace("Name=[exporter] Game Exec=/bin/sh", ""), (
+                forbidden,
+                entry,
+            )
+        machine.succeed(as_owner(f"desktop-file-validate {game_entry}"))
         # The icon is a fresh encoding: a PNG, but none of the guest's bytes
         # beyond its pixels.
-        icon = f"{icons}/org.example.Game.png"
+        icon = f"{icons}/{game_stem}.png"
         machine.succeed(as_owner(f"head -c 8 {icon} | od -An -tx1 | grep -Fq '89 50 4e 47 0d 0a 1a 0a'"))
         machine.fail(as_owner(f"grep -aq guest-text {icon}"))
         machine.fail(as_owner(f"echo {png} | base64 -d | cmp -s - {icon}"))
         # A symlinked icon is not followed; the launcher gets a generic icon.
         machine.succeed(
-            as_owner(f"grep -Fx Icon=application-x-executable {exported}/org.example.Linked.desktop")
+            as_owner(
+                f"grep -Fx Icon=application-x-executable {exported}/{linked_stem}.desktop"
+            )
         )
-        machine.succeed(as_owner(f"test ! -e {icons}/org.example.Linked.png"))
-        for name in ["leak.desktop", "host.desktop", "hidden.desktop", "bad name.desktop"]:
-            machine.succeed(as_owner(f"test ! -e {shlex.quote(exported + '/' + name)}"))
+        machine.succeed(as_owner(f"test ! -e {icons}/{linked_stem}.png"))
+        # Linked, hidden and dot entries are not exported: only the two above.
+        exported_files = machine.succeed(as_owner(f"ls {exported}")).split()
+        assert sorted(exported_files) == sorted(
+            [f"{game_stem}.desktop", f"{linked_stem}.desktop"]
+        ), exported_files
         # GNOME finds the launcher under a namespaced desktop ID.
         machine.succeed(
             as_owner(
                 f"{DESKTOP_PYTHON} -c "
                 + shlex.quote(
                     "import gi; gi.require_version('Gio', '2.0'); from gi.repository import Gio; "
-                    "assert Gio.DesktopAppInfo.new('nook-sandbox-exporter-org.example.Game.desktop')"
+                    f"assert Gio.DesktopAppInfo.new('nook-sandbox-{game_stem}.desktop')"
                 )
             )
         )
 
         # The launcher's Exec runs the entry inside the sandbox.
         machine.succeed(
-            as_owner(
-                "WAYLAND_DISPLAY=wayland-test "
-                "/etc/profiles/per-user/alice/bin/nk launch-desktop exporter org.example.Game.desktop"
-                " > /dev/null 2>&1"
-            )
+            as_owner(f"WAYLAND_DISPLAY=wayland-test {launch_command} > /dev/null 2>&1")
         )
         cli(
             "launch exporter -- bash -euc "
@@ -763,11 +792,12 @@ for desktop_id, query in [
         )
 
         # Removing the guest entry removes its launcher and icon.
-        cli("launch exporter -- rm ~/.local/share/applications/org.example.Game.desktop")
-        machine.wait_until_succeeds(
-            as_owner(f"test ! -e {exported}/org.example.Game.desktop"), timeout=60
+        cli(
+            "launch exporter -- rm "
+            + shlex.quote(f"/home/alice/.local/share/applications/{game_id}")
         )
-        machine.succeed(as_owner(f"test ! -e {icons}/org.example.Game.png"))
+        machine.wait_until_succeeds(as_owner(f"test ! -e {game_entry}"), timeout=60)
+        machine.succeed(as_owner(f"test ! -e {icon}"))
         cli("stop exporter")
     cli("stop fallback")
     inside("test ! -e /.flatpak-info")

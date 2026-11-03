@@ -60,21 +60,69 @@ const CATEGORIES: [&str; 13] = [
     "Utility",
 ];
 
-/// A desktop entry ID that is safe as a file name on both sides and as an
-/// unquoted Exec argument: no path separators, no field codes, no quoting.
+/// A desktop entry file name in the guest's applications directory: a single,
+/// visible path component, as launchers such as Steam create them ("Portal
+/// 2.desktop"). It never appears in a host Exec line: launchers carry it
+/// hex-encoded, so quoting and field codes do not apply.
 pub fn valid_desktop_id(id: &str) -> bool {
     let Some(stem) = id.strip_suffix(".desktop") else {
         return false;
     };
     !stem.is_empty()
-        && id.len() <= 128
-        && stem
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric())
-        && stem
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && id.len() <= 255
+        && !id.starts_with('.')
+        && !id.contains('/')
+        && !id.chars().any(char::is_control)
+}
+
+/// Encode a desktop entry ID for a host Exec line.
+pub fn encode_desktop_id(id: &str) -> String {
+    id.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Decode and validate an ID carried by a host launcher.
+pub fn decode_desktop_id(encoded: &str) -> Option<String> {
+    if !encoded.len().is_multiple_of(2) || encoded.len() > 510 {
+        return None;
+    }
+    let bytes = (0..encoded.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(encoded.get(index..index + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|id| valid_desktop_id(id))
+}
+
+/// The host file name of a profile's exported entry. GLib turns the path below
+/// an applications directory into a desktop ID by replacing `/` with `-`, so
+/// the profile is separated by `_`, which profile names cannot contain, and a
+/// hash of the guest's file name keeps entries apart whose readable parts
+/// coincide.
+fn host_stem(profile: &str, id: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut readable = String::new();
+    for character in id.trim_end_matches(".desktop").chars() {
+        if character.is_ascii_alphanumeric() || character == '.' {
+            readable.push(character);
+        } else if !readable.ends_with('-') {
+            readable.push('-');
+        }
+        if readable.len() >= 40 {
+            break;
+        }
+    }
+    let readable = readable.trim_matches(['-', '.']);
+    let readable = if readable.is_empty() {
+        "entry"
+    } else {
+        readable
+    };
+    format!("{profile}_{readable}-{hash:016x}")
 }
 
 fn valid_token(value: &str) -> bool {
@@ -86,7 +134,7 @@ fn valid_token(value: &str) -> bool {
 }
 
 /// Characters that could reorder, hide, or spoof the displayed text, such as
-/// bidirectional overrides that would move the sandbox suffix.
+/// bidirectional overrides, format controls and blank-looking letters.
 fn invisible(character: char) -> bool {
     character.is_control()
         || matches!(
@@ -102,6 +150,17 @@ fn invisible(character: char) -> bool {
                 | '\u{200B}'..='\u{200F}'
                 | '\u{202A}'..='\u{202E}'
                 | '\u{2060}'..='\u{206F}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{06DD}'
+                | '\u{070F}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08E2}'
+                | '\u{110BD}'
+                | '\u{110CD}'
+                | '\u{13430}'..='\u{1343F}'
+                | '\u{1BCA0}'..='\u{1BCA3}'
+                | '\u{1D173}'..='\u{1D17A}'
+                | '\u{2800}'
                 | '\u{3164}'
                 | '\u{FE00}'..='\u{FE0F}'
                 | '\u{FEFF}'
@@ -419,13 +478,17 @@ fn data_home() -> Result<PathBuf> {
 fn render(profile: &str, launcher: &str, export: &Export, icon: &str) -> String {
     let entry = &export.entry;
     let mut text = String::from("[Desktop Entry]\nType=Application\n");
-    text += &format!("Name={} ({profile})\n", escape(&entry.name));
+    // The sandbox comes first so that truncation cannot hide it.
+    text += &format!("Name=[{profile}] {}\n", escape(&entry.name));
     if let Some(comment) = &entry.comment {
         text += &format!("Comment={}\n", escape(comment));
     }
     text += &format!("Icon={icon}\n");
     text += &format!("TryExec={launcher}\n");
-    text += &format!("Exec={launcher} launch-desktop {profile} {}\n", export.id);
+    text += &format!(
+        "Exec={launcher} launch-desktop {profile} --encoded-id {}\n",
+        encode_desktop_id(&export.id)
+    );
     text += "Terminal=false\n";
     if !entry.categories.is_empty() {
         text += &format!("Categories={};\n", entry.categories.join(";"));
@@ -435,7 +498,7 @@ fn render(profile: &str, launcher: &str, export: &Export, icon: &str) -> String 
     }
     text += &format!(
         "X-Nook-Sandbox={profile}\nX-Nook-Desktop-Id={}\n",
-        export.id
+        escape(&export.id)
     );
     text
 }
@@ -479,9 +542,44 @@ fn prune(directory: &Path, keep: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
+/// Remove a profile's exported entries that are not in `keep`, or, without a
+/// profile, entries of profiles that are not configured and anything from
+/// the earlier per-profile directory layout.
+fn prune_entries(directory: &Path, profile: Option<&str>, keep: &BTreeSet<String>) -> Result<()> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            if profile.is_none() {
+                fs::remove_dir_all(entry.path())?;
+            }
+            continue;
+        }
+        let name = entry.file_name();
+        let owner = name
+            .to_str()
+            .and_then(|name| name.split_once('_'))
+            .map(|(owner, _)| owner);
+        let remove = match profile {
+            Some(profile) => {
+                owner == Some(profile) && !name.to_str().is_some_and(|name| keep.contains(name))
+            }
+            None => !owner.is_some_and(|owner| keep.contains(owner)),
+        };
+        if remove {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 fn sync_profile(profile: &Profile, data: &Path) -> Result<()> {
     let name = profile.get("name")?;
-    let applications = data.join("applications").join(NAMESPACE).join(name);
+    let applications = data.join("applications").join(NAMESPACE);
     let icons = data.join(NAMESPACE).join("icons").join(name);
     let exports = if profile.flag("exportDesktopEntries") {
         match profile.persistent_home("main")? {
@@ -507,10 +605,11 @@ fn sync_profile(profile: &Profile, data: &Path) -> Result<()> {
         fs::create_dir_all(&applications)?;
     }
     for export in &exports {
+        let stem = host_stem(name, &export.id);
         let icon = match &export.icon {
             Some(bytes) => {
                 fs::create_dir_all(&icons)?;
-                let file = format!("{}.png", export.id.trim_end_matches(".desktop"));
+                let file = format!("{stem}.png");
                 let path = icons.join(&file);
                 write_if_changed(&path, bytes)?;
                 kept_icons.insert(file);
@@ -522,10 +621,11 @@ fn sync_profile(profile: &Profile, data: &Path) -> Result<()> {
             None => FALLBACK_ICON.to_owned(),
         };
         let contents = render(name, launcher, export, &escape(&icon));
-        write_if_changed(&applications.join(&export.id), contents.as_bytes())?;
-        kept_entries.insert(export.id.clone());
+        let file = format!("{stem}.desktop");
+        write_if_changed(&applications.join(&file), contents.as_bytes())?;
+        kept_entries.insert(file);
     }
-    prune(&applications, &kept_entries)?;
+    prune_entries(&applications, Some(name), &kept_entries)?;
     prune(&icons, &kept_icons)?;
     Ok(())
 }
@@ -552,7 +652,11 @@ pub fn sync(profiles: &[Profile], only: Option<&str>) -> Result<()> {
             return Err(format!("unknown profile {only}").into());
         }
     } else {
-        prune(&data.join("applications").join(NAMESPACE), &configured)?;
+        prune_entries(
+            &data.join("applications").join(NAMESPACE),
+            None,
+            &configured,
+        )?;
         prune(&data.join(NAMESPACE).join("icons"), &configured)?;
     }
     if failures > 0 {
@@ -595,32 +699,74 @@ mod tests {
     }
 
     #[test]
-    fn desktop_ids_are_plain_file_names() {
+    fn desktop_ids_are_single_visible_file_names() {
         for good in [
             "steam_app_10.desktop",
             "org.example.Game.desktop",
-            "a-b.desktop",
+            "Portal 2.desktop",
+            "-flag.desktop",
+            "a%U \"quoted\" $x.desktop",
+            "Ünïcode ゲーム.desktop",
         ] {
             assert!(valid_desktop_id(good), "{good}");
+            assert_eq!(
+                decode_desktop_id(&encode_desktop_id(good)).as_deref(),
+                Some(good)
+            );
+            assert!(
+                encode_desktop_id(good)
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            );
         }
         for bad in [
             ".desktop",
             ".hidden.desktop",
-            "-flag.desktop",
             "../x.desktop",
             "a/b.desktop",
-            "a b.desktop",
-            "a%U.desktop",
-            "a\"b.desktop",
+            "line\nbreak.desktop",
             "game",
             "game.desktop.bak",
         ] {
-            assert!(!valid_desktop_id(bad), "{bad}");
+            assert!(!valid_desktop_id(bad), "{bad:?}");
+            assert_eq!(decode_desktop_id(&encode_desktop_id(bad)), None);
+        }
+        for bad in [
+            "",
+            "6",
+            "zz",
+            "2e2e2f782e6465736b746f70",
+            "ff2e6465736b746f70",
+        ] {
+            assert_eq!(decode_desktop_id(bad), None, "{bad}");
         }
     }
 
     #[test]
-    fn display_text_cannot_inject_lines_or_reorder_the_suffix() {
+    fn host_desktop_ids_cannot_collide_across_profiles() {
+        // GLib maps nook-sandbox/<file> to nook-sandbox-<file>; the profile is
+        // delimited by a character profile names cannot contain.
+        let first = host_stem("dev", "foo-bar.desktop");
+        let second = host_stem("dev-foo", "bar.desktop");
+        assert_ne!(first, second);
+        assert!(first.starts_with("dev_foo-bar-"));
+        assert!(second.starts_with("dev-foo_bar-"));
+        assert_eq!(first.split_once('_').unwrap().0, "dev");
+        assert_eq!(second.split_once('_').unwrap().0, "dev-foo");
+        // Readable parts that coincide are kept apart by the hash.
+        assert_ne!(
+            host_stem("dev", "a b.desktop"),
+            host_stem("dev", "a-b.desktop")
+        );
+        assert_eq!(
+            host_stem("exporter", "Portal 2.desktop"),
+            "exporter_Portal-2-811420f8a0f454a3"
+        );
+        assert!(host_stem("dev", "ゲーム.desktop").starts_with("dev_entry-"));
+    }
+
+    #[test]
+    fn display_text_cannot_inject_lines_or_hide_characters() {
         assert_eq!(
             display_text(r"Game\nExec=/bin/sh").as_deref(),
             Some("Game Exec=/bin/sh")
@@ -631,6 +777,10 @@ mod tests {
         );
         assert_eq!(display_text(r"back\\slash").as_deref(), Some(r"back\slash"));
         assert_eq!(display_text("\u{202E}\u{2066}"), None);
+        assert_eq!(
+            display_text("a\u{2800}\u{1D173}\u{13430}\u{1BCA0}\u{0600}b").as_deref(),
+            Some("ab")
+        );
         assert_eq!(display_text(&"x".repeat(500)).unwrap().chars().count(), 80);
     }
 
@@ -668,12 +818,12 @@ mod tests {
                 .lines()
                 .filter(|line| line.starts_with("Exec="))
                 .collect::<Vec<_>>(),
-            ["Exec=/nix/profile/bin/nk launch-desktop dev game.desktop"]
+            ["Exec=/nix/profile/bin/nk launch-desktop dev --encoded-id 67616d652e6465736b746f70"]
         );
         for key in ["MimeType", "DBusActivatable", "Actions", "[Desktop Action"] {
             assert!(!rendered.contains(key), "{key}");
         }
-        assert!(rendered.contains("Name=Game (dev)\n"));
+        assert!(rendered.contains("Name=[dev] Game\n"));
     }
 
     #[test]

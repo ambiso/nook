@@ -376,12 +376,13 @@ the host too, kept in sync by a user path unit (or `nk sync-desktop-entries`).
 The sandbox is treated as untrusted: each host launcher is generated from
 scratch and only runs `nk launch-desktop PROFILE ID`, which launches that entry
 inside the sandbox. From the guest's entry, Nook takes only its name and comment
-(sanitized, and always marked with the profile name), registered categories,
-window class, and a PNG icon from the guest's hicolor theme. The icon is
-decoded by Nook's memory-safe Rust PNG decoder within size limits and written
-anew as a plain RGBA image, so the desktop's image loaders never see guest
-bytes. File and URL handlers, actions, D-Bus activation and anything else the
-guest declares are dropped, and guest symlinks are never followed.
+(sanitized, and prefixed with the profile name, as in "[steam] Portal 2"),
+registered categories, window class, and a PNG icon from the guest's hicolor
+theme. The icon is decoded by Nook's memory-safe Rust PNG decoder within size
+limits and written anew as a plain RGBA image, so the desktop's image loaders
+never see guest bytes. File and URL handlers, actions, D-Bus activation and
+anything else the guest declares are dropped, and guest symlinks are never
+followed.
 
 Bash, Zsh, and Fish completions are installed with the package and exported by
 the Home Manager launchers. They use Clap's CLI definitions for subcommands and

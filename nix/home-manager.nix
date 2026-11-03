@@ -466,8 +466,9 @@ let
           *.desktop) ;;
           *) echo "nook: not a desktop entry ID: $id" >&2; exit 2 ;;
         esac
+        # A single visible file name, as nk validates it; spaces are fine.
         case "$id" in
-          .* | *[!A-Za-z0-9._-]*)
+          .* | */* | *[[:cntrl:]]*)
             echo "nook: invalid desktop entry ID: $id" >&2
             exit 2
             ;;

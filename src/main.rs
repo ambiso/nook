@@ -139,8 +139,15 @@ struct Launch {
 struct LaunchDesktop {
     profile: String,
     /// Desktop entry ID, resolved by the guest's XDG data directories
-    #[arg(value_parser = parse_desktop_id)]
-    id: String,
+    #[arg(
+        value_parser = parse_desktop_id,
+        required_unless_present = "encoded_id",
+        conflicts_with = "encoded_id"
+    )]
+    id: Option<String>,
+    /// The ID as hexadecimal UTF-8; used by exported launchers
+    #[arg(long, value_parser = parse_encoded_desktop_id)]
+    encoded_id: Option<String>,
     /// Files or URLs for the application
     #[arg(last = true)]
     arguments: Vec<String>,
@@ -259,8 +266,13 @@ fn parse_desktop_id(value: &str) -> std::result::Result<String, String> {
     if desktop::valid_desktop_id(value) {
         Ok(value.to_owned())
     } else {
-        Err("use a desktop entry file name such as org.example.App.desktop".into())
+        Err("use a desktop entry file name such as \"Portal 2.desktop\"".into())
     }
+}
+
+fn parse_encoded_desktop_id(value: &str) -> std::result::Result<String, String> {
+    desktop::decode_desktop_id(value)
+        .ok_or_else(|| "not a hex-encoded desktop entry file name".into())
 }
 
 fn find_profile<'a>(profiles: &'a [Profile], name: &str) -> Result<&'a Profile> {
@@ -720,7 +732,11 @@ fn run() -> Result<i32> {
         }
         Action::LaunchDesktop(request) => {
             let profile = find_profile(&profiles, &request.profile)?;
-            let mut command = vec![request.id];
+            let id = request
+                .encoded_id
+                .or(request.id)
+                .ok_or("missing desktop entry ID")?;
+            let mut command = vec![id];
             command.extend(request.arguments);
             launch(profile, "main", &command, true, EntryPoint::Desktop)
         }

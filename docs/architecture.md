@@ -226,12 +226,17 @@ The host user's `nk sync-desktop-entries` reads the main instance's
 `~/.local/share/applications` as untrusted data: through directory descriptors
 with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV)`, regular
 files only, non-blocking and size-limited. Each host launcher is written from
-scratch under `applications/nook-sandbox/PROFILE/`, so its desktop ID is
-namespaced and cannot shadow a host application. Its `Exec` and `TryExec` are
-fixed to the stable `nk launch-desktop PROFILE ID`, with the ID restricted to a
-plain file name. Only the entry's name and comment (decoded, stripped of control
-and invisible formatting characters, length-limited, and suffixed with the
-profile name), registered main categories, a validated `StartupWMClass`, and a
+scratch as `applications/nook-sandbox/PROFILE_NAME-HASH.desktop`. GLib turns
+that path into the desktop ID `nook-sandbox-PROFILE_NAME-HASH.desktop`; profile
+names cannot contain `_`, and the hash covers the guest's file name, so a
+launcher can neither shadow a host application nor take over another
+profile's. Its `Exec` and `TryExec` are fixed to the stable
+`nk launch-desktop PROFILE --encoded-id HEX`; the guest's file name, which may
+contain spaces as Steam's do, travels hex-encoded, so no quoting or field codes
+apply, and must be a single path component without a leading dot. Only the
+entry's name and comment (decoded, stripped of control and invisible
+formatting characters, length-limited, and prefixed with the profile name so
+truncation cannot hide it), registered main categories, a validated `StartupWMClass`, and a
 PNG icon named by the entry and found in the guest's hicolor theme are used.
 The icon is decoded in-process by the pure-Rust `png` crate, within dimension and
 allocation limits, and re-encoded as 8-bit RGBA with only header, image data
