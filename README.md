@@ -489,8 +489,9 @@ portal. Host appearance settings are inherited separately by default; disable
 `inheritAppearance` to turn off that separate connection when `portals` is also
 disabled. `nix = true` grants untrusted-client access to the host Nix daemon.
 The broker strips trusted-user authority even when the owner is trusted by the
-host daemon. Adding `homeManagerModules` also enables that connection for
-activation, even with `nix = false`. `podman = true` enables rootless Podman
+host daemon. Home Manager activation does not need that connection:
+`homeManagerModules` alone leave the daemon unreachable, and Nix inside such a
+guest can evaluate but not use a store. `podman = true` enables rootless Podman
 inside the instance.
 
 Networking uses a separate namespace and pasta. Guest loopback is independent
