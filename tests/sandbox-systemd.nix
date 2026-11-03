@@ -136,7 +136,7 @@ let
     Type=Application
     Name=D-Bus GUI Check
     Exec=false
-    DBusActivatable=true
+    DBusActivatable=1
     DESKTOP
   '';
   # Installed into the guest's packages; its desktop entry is created at

@@ -436,7 +436,10 @@ try:
     machine.succeed(
         "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
         "--service-type=exec /run/current-system/sw/bin/bash -lc "
-        + shlex.quote('test "$(id -u)" = 0; test -z "${NOOK_TEST_HOME_ENV:-}"; test -n "$NOOK_TEST_NIXOS_ENV"')
+        + shlex.quote(
+            'test "$(id -u)" = 0; test -z "${NOOK_TEST_HOME_ENV:-}"; '
+            'test -z "${DBUS_SESSION_BUS_ADDRESS:-}"; test -n "$NOOK_TEST_NIXOS_ENV"'
+        )
     )
     machine.succeed("systemctl is-active --quiet sandbox-ualice-check@main.service")
 
@@ -605,9 +608,11 @@ for desktop_id, query in [
     # the caller's bus.
     guest_bus = "unix:path=/run/user/1000/bus"
     host_bus = "unix:path=/run/host/session-bus"
+    # GLib reads "DBusActivatable=1" as true, so dbus-gui is activated too.
+    # A file argument that looks like an option must not become one.
     for profile, application, bus in [
         ("check", "check-gui", guest_bus),
-        ("plain-gui", "plain-gui", host_bus),
+        ("plain-gui", "plain-gui -looks-like-an-option", host_bus),
         ("dbus-gui", "dbus-gui", guest_bus),
     ]:
         # A desktop session always provides its display; the first launch
@@ -616,6 +621,7 @@ for desktop_id, query in [
         machine.succeed(
             as_owner(f"WAYLAND_DISPLAY=wayland-test {application} > /dev/null 2>&1")
         )
+        application = application.split()[0]
         cli(
             f"launch {profile} -- bash -euc "
             + shlex.quote(

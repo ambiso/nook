@@ -213,22 +213,18 @@ in
   # source time, so /etc/set-environment must not conflict with a guest
   # module's plain definition of the same variable: defaults live in
   # extraInit (runs last, conditional), not in the export block.
-  environment.extraInit = lib.mkAfter (
-    ''
-      export XDG_STATE_HOME="''${XDG_STATE_HOME:-$HOME/.local/state}"
+  environment.extraInit = lib.mkAfter ''
+    export XDG_STATE_HOME="''${XDG_STATE_HOME:-$HOME/.local/state}"
+    unset DBUS_SYSTEM_BUS_ADDRESS
+    # The guest user's session bus and the session variables declared through
+    # the folded Home Manager configuration belong to that user only: other
+    # accounts, notably root, must not default to a bus the user controls or
+    # inherit its PATH (which may start with user-writable directories).
+    if [ "$(${pkgs.coreutils}/bin/id -u)" = ${toString uid} ]; then
       export DBUS_SESSION_BUS_ADDRESS="''${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/${toString uid}/bus}"
-      unset DBUS_SYSTEM_BUS_ADDRESS
-    ''
-    + lib.optionalString (homeManagerServiceName != "") ''
-      # Session variables declared through the folded Home Manager
-      # configuration, installed into the per-user profile. They belong to
-      # the guest user only: other accounts, notably root, must not inherit
-      # its PATH (which may start with user-writable directories).
-      if [ "$(${pkgs.coreutils}/bin/id -u)" = ${toString uid} ]; then
-        . /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh
-      fi
-    ''
-  );
+      ${lib.optionalString (homeManagerServiceName != "") ". /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh"}
+    fi
+  '';
   # Application metadata must resolve for every app in the guest: gio
   # launches the desktop entries the per-user profile exposes, and GTK/GIO
   # resolve icons against the same data dirs. NixOS's xdg.menus and xdg.icons

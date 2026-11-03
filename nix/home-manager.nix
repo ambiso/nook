@@ -458,7 +458,8 @@ let
       # D-Bus activatable entries are activated on the guest's own session
       # bus, where their services are installed, even when commands otherwise
       # use the host's proxied bus. The bus starts them in their own unit.
-      # Every other entry is spawned by gio, inside its own scope.
+      # The launch runs inside its own scope either way, so whatever it
+      # spawns outlives the entry command.
       desktopLauncher = pkgs.writeShellScript "nook-launch-desktop-${name}" ''
         set -eu
         id=''${1-}
@@ -477,7 +478,12 @@ let
         entry=
         IFS=:
         for directory in "''${XDG_DATA_HOME:-$HOME/.local/share}" ''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
-          if [ -n "$directory" ] && [ -f "$directory/applications/$id" ]; then
+          # The XDG specification ignores relative directories.
+          case "$directory" in
+            /*) ;;
+            *) continue ;;
+          esac
+          if [ -f "$directory/applications/$id" ]; then
             entry=$directory/applications/$id
             break
           fi
@@ -487,16 +493,70 @@ let
           echo "nook: no desktop entry $id" >&2
           exit 1
         fi
-        if ${pkgs.gawk}/bin/awk '
-          /^[ \t]*\[/ { main = ($0 ~ /^\[Desktop Entry\][ \t]*$/); next }
-          main && /^DBusActivatable[ \t]*=[ \t]*true[ \t]*$/ { found = 1 }
-          END { exit !found }
-        ' "$entry"; then
-          DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
-            exec ${pkgs.glib}/bin/gio launch "$entry" "$@"
-        fi
-        exec ${applicationScope} ${pkgs.glib}/bin/gio launch "$entry" "$@"
+        exec ${applicationScope} ${desktopLaunch}/bin/nook-desktop-launch "$entry" "$@"
       '';
+      # Launch a desktop entry file the way `gio launch` does, with three
+      # differences. The entry is loaded once, and its own DBusActivatable
+      # value (GLib's parse and boolean) selects the guest's bus before any
+      # bus is used, so Nook and GLib cannot disagree about it. The session
+      # bus is flushed before exiting: GLib queues D-Bus activation and its
+      # flush asynchronously, and `gio launch` can exit before either is
+      # sent. And arguments are only ever files or URIs, never options.
+      desktopLaunch =
+        pkgs.runCommandCC "nook-desktop-launch"
+          {
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.glib ];
+          }
+          ''
+            mkdir -p "$out/bin"
+            $CC -O2 -Wall -Werror -x c - -o "$out/bin/nook-desktop-launch" \
+              $(pkg-config --cflags --libs gio-unix-2.0) <<'EOF'
+            #include <gio/gdesktopappinfo.h>
+            #include <gio/gio.h>
+
+            int main(int argc, char **argv) {
+              if (argc < 2) {
+                g_printerr("usage: nook-desktop-launch DESKTOP-FILE [FILE-OR-URI...]\n");
+                return 2;
+              }
+              GDesktopAppInfo *info = g_desktop_app_info_new_from_filename(argv[1]);
+              if (info == NULL) {
+                g_printerr("nook: cannot load desktop entry %s\n", argv[1]);
+                return 1;
+              }
+              if (g_desktop_app_info_get_boolean(info, G_KEY_FILE_DESKTOP_KEY_DBUS_ACTIVATABLE)) {
+                const char *runtime = g_getenv("XDG_RUNTIME_DIR");
+                if (runtime == NULL) {
+                  g_printerr("nook: XDG_RUNTIME_DIR is not set\n");
+                  return 1;
+                }
+                char *address = g_strdup_printf("unix:path=%s/bus", runtime);
+                g_setenv("DBUS_SESSION_BUS_ADDRESS", address, TRUE);
+                g_free(address);
+              }
+              GList *files = NULL;
+              for (int index = argc - 1; index >= 2; index--)
+                files = g_list_prepend(files, g_file_new_for_commandline_arg(argv[index]));
+              GAppLaunchContext *context = g_app_launch_context_new();
+              GError *error = NULL;
+              gboolean launched = g_app_info_launch(G_APP_INFO(info), files, context, &error);
+              if (!launched) {
+                g_printerr("nook: cannot launch %s: %s\n", argv[1], error->message);
+                g_error_free(error);
+              }
+              GDBusConnection *bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+              if (bus != NULL) {
+                g_dbus_connection_flush_sync(bus, NULL, NULL);
+                g_object_unref(bus);
+              }
+              g_list_free_full(files, g_object_unref);
+              g_object_unref(context);
+              g_object_unref(info);
+              return launched ? 0 : 1;
+            }
+            EOF
+          '';
       sessionTools =
         pkgs.runCommand "sandbox-session-tools" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
           ''
