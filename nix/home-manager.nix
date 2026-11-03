@@ -269,12 +269,16 @@ let
           # orphan-link cleanup and the systemd and dconf diffs between
           # generations. Record it after a successful activation, as HM does,
           # but as a plain link: the system closure already pins it.
-          currentGeneration = ''"''${XDG_STATE_HOME:-$HOME/.local/state}/home-manager/gcroots/current-home"'';
+          #
           # HM resolves XDG_STATE_HOME in a login shell, from the evaluated
-          # session environment (including its own session variables). The
-          # unit's scripts must resolve it identically, or a custom state
-          # home would put the link where HM never reads it.
-          loadSessionEnvironment = ". /etc/set-environment";
+          # session environment (including its own session variables), so a
+          # custom state home must be resolved the same way. Source it in a
+          # subshell: its PATH starts with user-writable profiles, which must
+          # not choose the commands these scripts run.
+          resolveCurrentGeneration = ''
+            stateHome=$(. /etc/set-environment >/dev/null 2>&1; printf '%s' "''${XDG_STATE_HOME:-$HOME/.local/state}")
+            currentGeneration="$stateHome/home-manager/gcroots/current-home"
+          '';
         in
         {
           imports = [ home-manager.nixosModules.home-manager ];
@@ -331,8 +335,8 @@ let
                 ]
                 ++ lib.optional managesSshConfig (
                   pkgs.writeShellScript "nook-ssh-config-pre-${name}" ''
-                    ${loadSessionEnvironment}
-                    previous=${currentGeneration}/home-files/.ssh/config
+                    ${resolveCurrentGeneration}
+                    previous="$currentGeneration/home-files/.ssh/config"
                     if [ -f "$HOME/.ssh/config" ] && [ ! -L "$HOME/.ssh/config" ] \
                       && [ -f "$previous" ] \
                       && ${pkgs.uutils-diffutils}/bin/cmp -s \
@@ -343,9 +347,9 @@ let
                 );
                 ExecStartPost = [
                   (pkgs.writeShellScript "nook-hm-current-generation-${name}" ''
-                    ${loadSessionEnvironment}
-                    mkdir -p "$(dirname ${currentGeneration})"
-                    ln -sfnT ${guestHome.home.activationPackage} ${currentGeneration}
+                    ${resolveCurrentGeneration}
+                    mkdir -p "$(dirname "$currentGeneration")"
+                    ln -sfnT ${guestHome.home.activationPackage} "$currentGeneration"
                   '')
                 ]
                 ++ lib.optional managesSshConfig (
