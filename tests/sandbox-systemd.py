@@ -590,7 +590,44 @@ for desktop_id, query in [
     # These are the generated per-profile launch wrappers (what GNOME's
     # desktop entries exec), not nk subcommands.
     assert "fallback GUI started" in machine.succeed(as_owner("fallback-gui"))
-    machine.succeed(as_owner("check-gui"))
+    # Desktop launchers return once the application has started, through
+    # D-Bus activation or by spawning its Exec line. Either way the
+    # application must reach the compositor and keep running after the entry
+    # command's unit is gone. D-Bus activation happens on the guest's bus even
+    # where commands use the host's proxied bus; spawned applications keep
+    # the caller's bus.
+    guest_bus = "unix:path=/run/user/1000/bus"
+    host_bus = "unix:path=/run/host/session-bus"
+    for profile, application, bus in [
+        ("check", "check-gui", guest_bus),
+        ("plain-gui", "plain-gui", host_bus),
+        ("dbus-gui", "dbus-gui", guest_bus),
+    ]:
+        # A desktop session always provides its display; the first launch
+        # starts the instance with it. The application inherits the launcher's
+        # output, so do not wait for it to close.
+        machine.succeed(
+            as_owner(f"WAYLAND_DISPLAY=wayland-test {application} > /dev/null 2>&1")
+        )
+        cli(
+            f"launch {profile} -- bash -euc "
+            + shlex.quote(
+                f"""
+                pid_file="$XDG_RUNTIME_DIR/{application}.pid"
+                for _ in $(seq 50); do
+                  test -s "$pid_file" && break
+                  sleep 0.2
+                done
+                sleep 2
+                kill -0 "$(cat "$pid_file")"
+                test "$(cat "$XDG_RUNTIME_DIR/{application}.bus")" = {shlex.quote(bus)}
+                kill "$(cat "$pid_file")"
+                rm "$pid_file"
+                """
+            )
+        )
+    cli("stop plain-gui")
+    cli("stop dbus-gui")
     cli("stop fallback")
     inside("test ! -e /.flatpak-info")
 

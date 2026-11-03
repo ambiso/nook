@@ -435,6 +435,67 @@ let
         exec "$@"
       '';
 
+      # Entry commands run as the main process of a transient user unit, and
+      # systemd stops everything left in that unit's cgroup once the main
+      # process exits. Desktop launchers such as `gio launch` return as soon
+      # as the application has started, so start applications in their own
+      # scope under app.slice, as desktop shells do. systemd-run --scope moves
+      # itself into the scope and then execs the command, keeping output and
+      # exit status. It reaches the user manager through its private socket,
+      # so the plain binary is used rather than the session tool wrapper,
+      # which would replace the caller's (possibly host-proxied) session bus
+      # in the application's environment. Arguments may carry host-supplied
+      # URLs and file names and must not be expanded.
+      applicationScope = pkgs.writeShellScript "nook-application-scope-${name}" ''
+        exec ${pkgs.systemd}/bin/systemd-run --user --scope --quiet --collect \
+          --slice=app.slice --expand-environment=no -- "$@"
+      '';
+      # Launch a desktop entry by its ID, resolved inside the guest like any
+      # XDG launcher would: the user's data home first, then the data dirs,
+      # which include the running generation's per-user profile. Only the ID
+      # crosses the boundary; what the entry runs is the guest's business.
+      #
+      # D-Bus activatable entries are activated on the guest's own session
+      # bus, where their services are installed, even when commands otherwise
+      # use the host's proxied bus. The bus starts them in their own unit.
+      # Every other entry is spawned by gio, inside its own scope.
+      desktopLauncher = pkgs.writeShellScript "nook-launch-desktop-${name}" ''
+        set -eu
+        id=''${1-}
+        case "$id" in
+          *.desktop) ;;
+          *) echo "nook: not a desktop entry ID: $id" >&2; exit 2 ;;
+        esac
+        case "$id" in
+          .* | *[!A-Za-z0-9._-]*)
+            echo "nook: invalid desktop entry ID: $id" >&2
+            exit 2
+            ;;
+        esac
+        shift
+        entry=
+        IFS=:
+        for directory in "''${XDG_DATA_HOME:-$HOME/.local/share}" ''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do
+          if [ -n "$directory" ] && [ -f "$directory/applications/$id" ]; then
+            entry=$directory/applications/$id
+            break
+          fi
+        done
+        unset IFS
+        if [ -z "$entry" ]; then
+          echo "nook: no desktop entry $id" >&2
+          exit 1
+        fi
+        if ${pkgs.gawk}/bin/awk '
+          /^[ \t]*\[/ { main = ($0 ~ /^\[Desktop Entry\][ \t]*$/); next }
+          main && /^DBusActivatable[ \t]*=[ \t]*true[ \t]*$/ { found = 1 }
+          END { exit !found }
+        ' "$entry"; then
+          DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus" \
+            exec ${pkgs.glib}/bin/gio launch "$entry" "$@"
+        fi
+        exec ${applicationScope} ${pkgs.glib}/bin/gio launch "$entry" "$@"
+      '';
       sessionTools =
         pkgs.runCommand "sandbox-session-tools" { nativeBuildInputs = [ pkgs.makeWrapper ]; }
           ''
@@ -861,6 +922,16 @@ let
           readOnly = true;
           internal = true;
         };
+        _applicationScope = lib.mkOption {
+          type = types.package;
+          readOnly = true;
+          internal = true;
+        };
+        _desktopLauncher = lib.mkOption {
+          type = types.package;
+          readOnly = true;
+          internal = true;
+        };
       };
       config = {
         hostEnvironment = lib.mkBefore (
@@ -874,6 +945,8 @@ let
         _profile = profile;
         _container = container;
         _appData = appData;
+        _applicationScope = applicationScope;
+        _desktopLauncher = desktopLauncher;
       };
     };
   cfg = outer.sandboxes;
@@ -946,19 +1019,21 @@ let
               ${lib.optionalString (c.guiEntryPoint != null) ''
               # The application executes inside the guest, against the running
               # generation's per-user profile: upstream desktop entries launch
-              # through gio (arguments substitute per the desktop-entry spec,
-              # no X dependency), profiles without desktop data run the
-              # resolved per-user binary directly. The host copy keeps the
-              # upstream desktop ID for window matching; its Exec becomes the
-              # single sandbox launch command, and upstream desktop actions
+              # by ID through the guest's desktop launcher (resolved by the
+              # guest's XDG data dirs; arguments substitute per the
+              # desktop-entry spec), profiles without desktop data run the
+              # resolved per-user binary directly. Either way the application
+              # outlives the entry command that started it. The host copy keeps
+              # the upstream desktop ID for window matching; its Exec becomes
+              # the single sandbox launch command, and upstream desktop actions
               # are dropped (their nested Exec lines would bypass the
               # sandbox).
               destination="$out/share/applications/${desktop}"
               if [ -f "${c._appData}/share/applications/${desktop}" ]; then
-                guestCommand="${pkgs.glib}/bin/gio launch /etc/profiles/per-user/${homeConfig.home.username}/share/applications/${desktop}"
+                guestCommand="${c._desktopLauncher} ${desktop}"
                 cp "${c._appData}/share/applications/${desktop}" "$destination"
               else
-                guestCommand=/etc/profiles/per-user/${homeConfig.home.username}/bin/${baseNameOf c.guiEntryPoint}
+                guestCommand="${c._applicationScope} /etc/profiles/per-user/${homeConfig.home.username}/bin/${baseNameOf c.guiEntryPoint}"
                 cp "${fallbackDesktop}/share/applications/${desktop}" "$destination"
               fi
               chmod u+w "$destination"

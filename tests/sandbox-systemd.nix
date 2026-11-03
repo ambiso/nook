@@ -81,9 +81,30 @@ let
     ];
     runScript = "bash";
   };
+  # A long-running GUI application. Desktop launchers return once it has
+  # started, and it must outlive the entry command that launched it. It
+  # records the session bus it was given and, once it has reached the
+  # compositor, its PID.
+  longRunningGui =
+    name:
+    pkgs.writeShellScript name ''
+      set -eu
+      printf '%s\n' "''${DBUS_SESSION_BUS_ADDRESS-}" > "$XDG_RUNTIME_DIR/${name}.bus"
+      ${pkgs.wayland-utils}/bin/wayland-info > /dev/null
+      echo $$ > "$XDG_RUNTIME_DIR/${name}.pid"
+      exec ${pkgs.coreutils}/bin/sleep 300
+    '';
+  # Launched through D-Bus activation: its desktop entry is DBusActivatable
+  # and it ships the matching session service.
   desktopApp = pkgs.runCommand "sandbox-desktop-test" { } ''
-    mkdir -p "$out/bin" "$out/share/applications" "$out/share/icons/hicolor/scalable/apps"
-    ln -s ${pkgs.wayland-utils}/bin/wayland-info "$out/bin/check-gui"
+    mkdir -p "$out/bin" "$out/share/applications" "$out/share/icons/hicolor/scalable/apps" \
+      "$out/share/dbus-1/services"
+    ln -s ${longRunningGui "check-gui"} "$out/bin/check-gui"
+    cat > "$out/share/dbus-1/services/org.example.SandboxCheck.service" <<SERVICE
+    [D-BUS Service]
+    Name=org.example.SandboxCheck
+    Exec=$out/bin/check-gui
+    SERVICE
     cat > "$out/share/applications/org.example.SandboxCheck.desktop" <<'DESKTOP'
     [Desktop Entry]
     Type=Application
@@ -100,6 +121,34 @@ let
     NotShowIn=GNOME;
     DESKTOP
     echo '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48"><rect width="48" height="48" fill="blue"/></svg>' > "$out/share/icons/hicolor/scalable/apps/org.example.SandboxCheck.svg"
+  '';
+  # D-Bus activated in a profile whose commands use the host's proxied bus.
+  dbusGuiApp = pkgs.runCommand "sandbox-dbus-gui-test" { } ''
+    mkdir -p "$out/bin" "$out/share/applications" "$out/share/dbus-1/services"
+    ln -s ${longRunningGui "dbus-gui"} "$out/bin/dbus-gui"
+    cat > "$out/share/dbus-1/services/org.example.DbusGui.service" <<SERVICE
+    [D-BUS Service]
+    Name=org.example.DbusGui
+    Exec=$out/bin/dbus-gui
+    SERVICE
+    cat > "$out/share/applications/org.example.DbusGui.desktop" <<'DESKTOP'
+    [Desktop Entry]
+    Type=Application
+    Name=D-Bus GUI Check
+    Exec=false
+    DBusActivatable=true
+    DESKTOP
+  '';
+  # Launched by spawning its Exec line, like most applications.
+  plainGuiApp = pkgs.runCommand "sandbox-plain-gui-test" { } ''
+    mkdir -p "$out/bin" "$out/share/applications"
+    ln -s ${longRunningGui "plain-gui"} "$out/bin/plain-gui"
+    cat > "$out/share/applications/org.example.PlainGui.desktop" <<'DESKTOP'
+    [Desktop Entry]
+    Type=Application
+    Name=Plain GUI Check
+    Exec=plain-gui %U
+    DESKTOP
   '';
   image = pkgs.runCommand "sandbox-podman-test.tar" { nativeBuildInputs = [ pkgs.gnutar ]; } ''
     mkdir -p root/bin
@@ -514,6 +563,24 @@ pkgs.testers.runNixOSTest {
         network = false;
         guiEntryPoint = "/bin/fallback-gui";
         packages = [ (pkgs.writeShellScriptBin "fallback-gui" "echo 'fallback GUI started'") ];
+      };
+      programs.nook.sandboxes.plain-gui = {
+        persistent = false;
+        gpu = false;
+        audio = false;
+        network = false;
+        guiEntryPoint = "/bin/plain-gui";
+        desktopFile = "org.example.PlainGui.desktop";
+        packages = [ plainGuiApp ];
+      };
+      programs.nook.sandboxes.dbus-gui = {
+        persistent = false;
+        gpu = false;
+        audio = false;
+        network = false;
+        guiEntryPoint = "/bin/dbus-gui";
+        desktopFile = "org.example.DbusGui.desktop";
+        packages = [ dbusGuiApp ];
       };
       programs.nook.sandboxes.no-portals = {
         hostSessionBus = true;
