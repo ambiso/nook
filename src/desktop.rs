@@ -218,6 +218,20 @@ struct GuestEntry {
     icon: Option<String>,
     categories: Vec<&'static str>,
     window_class: Option<String>,
+    /// Steam's shortcuts declare no window class; their games' windows are
+    /// `steam_app_<id>`, the ID their Exec line launches.
+    steam_class: Option<String>,
+}
+
+/// The `steam_app_<id>` window class of a `steam://rungameid/<id>` launch.
+fn steam_class(exec: &str) -> Option<String> {
+    let (_, rest) = exec.split_once("steam://rungameid/")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let terminated = rest[digits.len()..]
+        .chars()
+        .next()
+        .is_none_or(|next| next.is_whitespace() || next == '"');
+    (terminated && (1..=10).contains(&digits.len())).then(|| format!("steam_app_{digits}"))
 }
 
 /// Parse the main group of an untrusted desktop entry. Returns None for
@@ -282,12 +296,14 @@ fn parse_entry(contents: &str) -> Option<GuestEntry> {
         .get("StartupWMClass")
         .filter(|value| valid_token(value))
         .cloned();
+    let steam_class = keys.get("Exec").and_then(|exec| steam_class(exec));
     Some(GuestEntry {
         name,
         comment,
         icon,
         categories,
         window_class,
+        steam_class,
     })
 }
 
@@ -475,7 +491,13 @@ fn data_home() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/share"))
 }
 
-fn render(profile: &str, launcher: &str, export: &Export, icon: &str) -> String {
+fn render(
+    profile: &str,
+    launcher: &str,
+    export: &Export,
+    icon: &str,
+    window_class: Option<&str>,
+) -> String {
     let entry = &export.entry;
     let mut text = String::from("[Desktop Entry]\nType=Application\n");
     // The sandbox comes first so that truncation cannot hide it.
@@ -493,7 +515,7 @@ fn render(profile: &str, launcher: &str, export: &Export, icon: &str) -> String 
     if !entry.categories.is_empty() {
         text += &format!("Categories={};\n", entry.categories.join(";"));
     }
-    if let Some(class) = &entry.window_class {
+    if let Some(class) = window_class {
         text += &format!("StartupWMClass={class}\n");
     }
     text += &format!(
@@ -542,6 +564,120 @@ fn prune(directory: &Path, keep: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
+/// Directories whose `applications` hold the host's desktop entries: the
+/// session's XDG data directories and, because the sync may run before a
+/// graphical session has set them, NixOS's standard profiles.
+fn host_data_directories(data: &Path) -> Vec<PathBuf> {
+    let mut directories = vec![data.to_path_buf()];
+    if let Some(dirs) = env::var_os("XDG_DATA_DIRS") {
+        directories.extend(env::split_paths(&dirs).filter(|path| path.is_absolute()));
+    }
+    if let Ok(Some(user)) = nix::unistd::User::from_uid(nix::unistd::getuid()) {
+        directories.push(
+            Path::new("/etc/profiles/per-user")
+                .join(&user.name)
+                .join("share"),
+        );
+        directories.push(user.dir.join(".nix-profile/share"));
+        directories.push(user.dir.join(".local/state/nix/profile/share"));
+    }
+    for directory in [
+        "/run/current-system/sw/share",
+        "/nix/var/nix/profiles/default/share",
+        "/usr/local/share",
+        "/usr/share",
+    ] {
+        directories.push(directory.into());
+    }
+    directories
+}
+
+/// Window classes that host applications claim, lowercased: their desktop
+/// IDs, which GNOME matches window app IDs against, and their
+/// StartupWMClass values. Nook's own exported launchers are skipped. Host
+/// files are trusted; the walk is bounded only to stay cheap.
+fn host_window_classes(directories: &[PathBuf], exported: &Path) -> BTreeSet<String> {
+    fn walk(
+        directory: &Path,
+        prefix: &str,
+        exported: &Path,
+        depth: usize,
+        budget: &mut usize,
+        classes: &mut BTreeSet<String>,
+    ) {
+        if depth > 4 || directory == exported {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if *budget == 0 {
+                return;
+            }
+            *budget -= 1;
+            let path = entry.path();
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if path.is_dir() {
+                let prefix = format!("{prefix}{name}-");
+                walk(&path, &prefix, exported, depth + 1, budget, classes);
+            } else if let Some(stem) = name.strip_suffix(".desktop") {
+                classes.insert(format!("{prefix}{stem}").to_lowercase());
+                let mut contents = String::new();
+                if File::open(&path)
+                    .and_then(|file| file.take(MAX_ENTRY_BYTES).read_to_string(&mut contents))
+                    .is_ok()
+                {
+                    for line in contents.lines() {
+                        if let Some((key, value)) = line.split_once('=')
+                            && key.trim() == "StartupWMClass"
+                        {
+                            classes.insert(value.trim().to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut classes = BTreeSet::new();
+    let mut budget = 20_000;
+    for directory in directories {
+        walk(
+            &directory.join("applications"),
+            "",
+            exported,
+            0,
+            &mut budget,
+            &mut classes,
+        );
+    }
+    classes
+}
+
+/// The window class that lets the desktop match an exported launcher's
+/// windows, and so show its icon: the guest's declared StartupWMClass, the
+/// class of a Steam game, or the guest's desktop file name, which is what
+/// the desktop matches window app IDs against. A class that a host
+/// application claims is never used, so a guest cannot have host windows
+/// shown, grouped and closed as its own.
+fn window_class(export: &Export, claimed: &BTreeSet<String>) -> Option<String> {
+    let stem = export
+        .id
+        .strip_suffix(".desktop")
+        .filter(|stem| valid_token(stem))
+        .map(str::to_owned);
+    [
+        export.entry.window_class.clone(),
+        export.entry.steam_class.clone(),
+        stem,
+    ]
+    .into_iter()
+    .flatten()
+    .find(|class| !claimed.contains(&class.to_lowercase()))
+}
+
 /// Remove a profile's exported entries that are not in `keep`, or, without a
 /// profile, entries of profiles that are not configured and anything from
 /// the earlier per-profile directory layout.
@@ -577,7 +713,7 @@ fn prune_entries(directory: &Path, profile: Option<&str>, keep: &BTreeSet<String
     Ok(())
 }
 
-fn sync_profile(profile: &Profile, data: &Path) -> Result<()> {
+fn sync_profile(profile: &Profile, data: &Path, claimed: &BTreeSet<String>) -> Result<()> {
     let name = profile.get("name")?;
     let applications = data.join("applications").join(NAMESPACE);
     let icons = data.join(NAMESPACE).join("icons").join(name);
@@ -620,7 +756,8 @@ fn sync_profile(profile: &Profile, data: &Path) -> Result<()> {
             }
             None => FALLBACK_ICON.to_owned(),
         };
-        let contents = render(name, launcher, export, &escape(&icon));
+        let class = window_class(export, claimed);
+        let contents = render(name, launcher, export, &escape(&icon), class.as_deref());
         let file = format!("{stem}.desktop");
         write_if_changed(&applications.join(&file), contents.as_bytes())?;
         kept_entries.insert(file);
@@ -634,6 +771,10 @@ fn sync_profile(profile: &Profile, data: &Path) -> Result<()> {
 /// remove launchers of profiles that are no longer configured.
 pub fn sync(profiles: &[Profile], only: Option<&str>) -> Result<()> {
     let data = data_home()?;
+    let claimed = host_window_classes(
+        &host_data_directories(&data),
+        &data.join("applications").join(NAMESPACE),
+    );
     let mut configured = BTreeSet::new();
     let mut failures = 0;
     for profile in profiles {
@@ -642,7 +783,7 @@ pub fn sync(profiles: &[Profile], only: Option<&str>) -> Result<()> {
         if only.is_some_and(|only| only != name) {
             continue;
         }
-        if let Err(error) = sync_profile(profile, &data) {
+        if let Err(error) = sync_profile(profile, &data, &claimed) {
             eprintln!("nk: cannot export desktop entries of {name}: {error}");
             failures += 1;
         }
@@ -801,6 +942,7 @@ mod tests {
                 icon: Some("game_icon".into()),
                 categories: vec!["Game"],
                 window_class: Some("game.bin".into()),
+                steam_class: None,
             }
         );
         let rendered = render(
@@ -812,6 +954,7 @@ mod tests {
                 icon: None,
             },
             FALLBACK_ICON,
+            Some("game.bin"),
         );
         assert_eq!(
             rendered
@@ -824,6 +967,102 @@ mod tests {
             assert!(!rendered.contains(key), "{key}");
         }
         assert!(rendered.contains("Name=[dev] Game\n"));
+        assert!(rendered.contains("StartupWMClass=game.bin\n"));
+    }
+
+    #[test]
+    fn steam_shortcuts_get_their_games_window_class() {
+        for (exec, class) in [
+            ("steam steam://rungameid/620", Some("steam_app_620")),
+            ("\"steam\" \"steam://rungameid/620\"", Some("steam_app_620")),
+            ("steam steam://rungameid/620 -extra", Some("steam_app_620")),
+            ("steam steam://rungameid/", None),
+            ("steam steam://rungameid/62a", None),
+            ("steam steam://rungameid/12345678901", None),
+            ("game", None),
+        ] {
+            assert_eq!(steam_class(exec).as_deref(), class, "{exec}");
+        }
+    }
+
+    #[test]
+    fn window_classes_never_claim_host_windows() {
+        let export = |id: &str, declared: Option<&str>, steam: Option<&str>| Export {
+            id: id.into(),
+            entry: GuestEntry {
+                name: "x".into(),
+                comment: None,
+                icon: None,
+                categories: Vec::new(),
+                window_class: declared.map(Into::into),
+                steam_class: steam.map(Into::into),
+            },
+            icon: None,
+        };
+        let claimed: BTreeSet<String> = ["org.gnome.nautilus", "firefox"]
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        // Declared, then Steam's, then the guest's file name.
+        let cases = [
+            (
+                export("game.desktop", Some("game.bin"), None),
+                Some("game.bin"),
+            ),
+            (
+                export("Portal 2.desktop", None, Some("steam_app_620")),
+                Some("steam_app_620"),
+            ),
+            (
+                export("org.example.Game.desktop", None, None),
+                Some("org.example.Game"),
+            ),
+            // Host claims are skipped, case-insensitively.
+            (export("evil.desktop", Some("Firefox"), None), Some("evil")),
+            (export("org.gnome.Nautilus.desktop", None, None), None),
+            // A file name that is not a plain token is not a class.
+            (export("Portal 2.desktop", None, None), None),
+        ];
+        for (export, expected) in cases {
+            assert_eq!(
+                window_class(&export, &claimed).as_deref(),
+                expected,
+                "{}",
+                export.id
+            );
+        }
+    }
+
+    #[test]
+    fn host_window_classes_cover_ids_and_declared_classes() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let applications = data.join("applications");
+        fs::create_dir_all(applications.join("vendor")).unwrap();
+        fs::create_dir_all(applications.join(NAMESPACE)).unwrap();
+        fs::write(
+            applications.join("org.gnome.Nautilus.desktop"),
+            "[Desktop Entry]\n",
+        )
+        .unwrap();
+        fs::write(
+            applications.join("vendor/tool.desktop"),
+            "[Desktop Entry]\nStartupWMClass = Tool-Window\n",
+        )
+        .unwrap();
+        // Nook's own exports never count as host claims.
+        fs::write(
+            applications.join(NAMESPACE).join("dev_game-0.desktop"),
+            "[Desktop Entry]\nStartupWMClass=game.bin\n",
+        )
+        .unwrap();
+        let classes =
+            host_window_classes(std::slice::from_ref(&data), &applications.join(NAMESPACE));
+        let expected: BTreeSet<String> = ["org.gnome.nautilus", "vendor-tool", "tool-window"]
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        assert_eq!(classes, expected);
     }
 
     #[test]

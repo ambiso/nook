@@ -236,16 +236,22 @@ contain spaces as Steam's do, travels hex-encoded, so no quoting or field codes
 apply, and must be a single path component without a leading dot. Only the
 entry's name and comment (decoded, stripped of control and invisible
 formatting characters, length-limited, and prefixed with the profile name so
-truncation cannot hide it), registered main categories, a validated `StartupWMClass`, and a
+truncation cannot hide it), registered main categories, a window class, and a
 PNG icon named by the entry and found in the guest's hicolor theme are used.
 The icon is decoded in-process by the pure-Rust `png` crate, within dimension and
 allocation limits, and re-encoded as 8-bit RGBA with only header, image data
 and end chunks, so the desktop's image loaders parse Nook's encoding rather
 than guest bytes; it is stored in a host-owned directory and referenced by
 absolute path. MIME and URL handler registration, actions, D-Bus activation,
-working directories, terminal entries and all other keys are dropped. A user
-path unit re-runs the sync when that directory changes, and every sync removes
-launchers whose guest entries, or profiles, are gone.
+working directories, terminal entries and all other keys are dropped. The
+window class (`StartupWMClass`) is what lets the desktop match an exported
+launcher's windows and show its icon. It is the guest's declared class, the
+`steam_app_ID` of a Steam shortcut (which declares none), or the guest's file
+name, which is what the desktop matches window app IDs against; a class that
+any host desktop entry claims, as its desktop ID or `StartupWMClass`, is never
+used, so a guest cannot have host windows shown, grouped or closed as its own.
+A user path unit re-runs the sync when that directory changes, and every sync
+removes launchers whose guest entries, or profiles, are gone.
 
 Host appearance settings come through the Settings portal by default, including
 live updates. This does not enable file dialogs or screen capture. Set

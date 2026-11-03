@@ -674,9 +674,18 @@ for desktop_id, query in [
         ]
         # Launchers such as Steam name their entries after the application.
         game_id = "Portal 2.desktop"
+        steam_id = "Steam Game.desktop"
         files = {
             game_id: game,
             "org.example.Linked.desktop": simple("Linked", "org.example.Linked"),
+            # Steam's shortcuts declare no window class; their games' is
+            # steam_app_<id>.
+            steam_id: [
+                line if not line.startswith("Exec=") else "Exec=steam steam://rungameid/620"
+                for line in simple("Steam Game", "x")
+            ],
+            # The host's own check launcher claims this class.
+            "claimer.desktop": simple("Claimer", "x") + ["StartupWMClass=org.example.SandboxCheck"],
             "hidden.desktop": simple("Hidden", "x") + ["NoDisplay=true"],
             ".dotted.desktop": simple("Dotted", "x"),
         }
@@ -723,6 +732,8 @@ for desktop_id, query in [
         icons = "/home/alice/.local/share/nook-sandbox/icons/exporter"
         game_stem = host_stem("exporter", game_id)
         linked_stem = host_stem("exporter", "org.example.Linked.desktop")
+        steam_stem = host_stem("exporter", steam_id)
+        claimer_stem = host_stem("exporter", "claimer.desktop")
         game_entry = f"{exported}/{game_stem}.desktop"
         # The host path unit notices the guest's change and syncs.
         machine.wait_until_succeeds(as_owner(f"test -f {game_entry}"), timeout=60)
@@ -761,10 +772,21 @@ for desktop_id, query in [
             )
         )
         machine.succeed(as_owner(f"test ! -e {icons}/{linked_stem}.png"))
-        # Linked, hidden and dot entries are not exported: only the two above.
-        exported_files = machine.succeed(as_owner(f"ls {exported}")).split()
+        # Window classes let the desktop show the launcher's icon for its
+        # windows, but never claim a host application's windows.
+        for stem, window_class in [
+            (linked_stem, "org.example.Linked"),
+            (steam_stem, "steam_app_620"),
+            (claimer_stem, "claimer"),
+        ]:
+            machine.wait_until_succeeds(
+                as_owner(f"grep -Fx StartupWMClass={window_class} {exported}/{stem}.desktop"),
+                timeout=60,
+            )
+        # Linked, hidden and dot entries are not exported.
+        exported_files = machine.succeed(as_owner(f"ls -1 {exported}")).splitlines()
         assert sorted(exported_files) == sorted(
-            [f"{game_stem}.desktop", f"{linked_stem}.desktop"]
+            f"{stem}.desktop" for stem in [game_stem, linked_stem, steam_stem, claimer_stem]
         ), exported_files
         # GNOME finds the launcher under a namespaced desktop ID.
         machine.succeed(
