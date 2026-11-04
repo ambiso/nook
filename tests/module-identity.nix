@@ -33,6 +33,12 @@ let
     }).config;
   evaluate = evaluateWith pkgs;
   automatic = evaluate { };
+  emptyProfiles = evaluate {
+    home-manager.users.alice.programs.nook.sandboxes = lib.mkForce { };
+  };
+  disabled = evaluate {
+    home-manager.users.alice.programs.nook.enable = lib.mkForce false;
+  };
   explicit = evaluate {
     users.users.alice.uid = 4242;
     users.groups.alice.gid = 4343;
@@ -144,6 +150,14 @@ assert lib.any (
   a: !a.assertion && lib.hasInfix "cannot forward Nook runtime variables: DISPLAY" a.message
 ) reservedForwardedEnvironment.home-manager.users.alice.assertions;
 assert automatic.users.users.alice.uid == null;
+assert emptyProfiles.home-manager.users.alice.home.activation ? removeNookDesktopEntries;
+assert disabled.home-manager.users.alice.home.activation ? removeNookDesktopEntries;
+assert lib.hasInfix "/applications/nook-sandbox" (
+  emptyProfiles.home-manager.users.alice.home.activation.removeNookDesktopEntries.data
+);
+assert !(builtins.hasAttr "nook-desktop-entries" (
+  emptyProfiles.home-manager.users.alice.systemd.user.services
+));
 assert automatic.users.groups.alice.gid == null;
 assert guest.guest.uid == 1000 && guest.guest.gid == 100;
 assert lib.elem "XDG_CURRENT_DESKTOP" guest.sandboxes.dev.hostEnvironment;

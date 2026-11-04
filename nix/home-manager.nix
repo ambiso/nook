@@ -1281,5 +1281,14 @@ in
         }
       ) (lib.filterAttrs (_: c: c.guiEntryPoint != null) cfg);
     })
+    # Removing the final profile (or disabling Nook) also removes the sync
+    # service. Clean up its generated files during this Home Manager switch.
+    (lib.mkIf (!outer.enable || cfg == { }) {
+      home.activation.removeNookDesktopEntries = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
+        run ${pkgs.coreutils}/bin/rm -rf -- \
+          ${lib.escapeShellArg "${homeConfig.xdg.dataHome}/applications/nook-sandbox"} \
+          ${lib.escapeShellArg "${homeConfig.xdg.dataHome}/nook-sandbox/icons"}
+      '';
+    })
   ];
 }
