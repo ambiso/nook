@@ -505,7 +505,14 @@ Interactive desktop portals are **off by default**. Enabling `portals` permits
 host consent dialogs and access to selected host files through the document
 portal. Host appearance settings are inherited separately by default; disable
 `inheritAppearance` to turn off that separate connection when `portals` is also
-disabled. `nix = true` grants untrusted-client access to the host Nix daemon.
+disabled. For now, portal-enabled sandboxes need a guest UID that matches the
+host account's UID. `xdg-dbus-proxy` cannot authenticate libdbus clients across
+that UID difference ([upstream issue](https://github.com/flatpak/xdg-dbus-proxy/issues/75)).
+For example, if `id -u` prints `1002`, set `programs.nook.guest.uid = 1002;`
+before rebuilding. This setting affects every profile. Restart an existing
+instance to apply the changed UID;
+Nook's ID-mapped home mount still presents the host owner's files as the guest
+owner. `nix = true` grants untrusted-client access to the host Nix daemon.
 The broker strips trusted-user authority even when the owner is trusted by the
 host daemon. Home Manager activation does not need that connection:
 `homeManagerModules` alone leave the daemon unreachable, and Nix inside such a
