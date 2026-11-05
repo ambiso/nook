@@ -65,6 +65,10 @@
           inherit home-manager;
           guestUid = 1002;
         };
+        proxy-client-uid = import ./tests/proxy-client-uid.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+        };
       });
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
       devShells = forAllSystems (
