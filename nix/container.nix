@@ -388,26 +388,36 @@ PYEOF
     description = "Host desktop portals on the sandbox session bus";
     wantedBy = [ "default.target" ];
     after = [ "dbus.socket" ];
-    environment.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
+    environment = {
+      DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
+      RUST_BACKTRACE = "1";
+    };
     serviceConfig = {
       ExecStart = "${launcher}/bin/nk --portal-bridge unix:path=/run/host/portal-bus";
       Type = "dbus";
       BusName = "org.freedesktop.portal.Desktop";
       Restart = "on-failure";
       RestartSec = 1;
+      # The guest journal is discarded with the container. Copy bridge errors
+      # to nspawn's console so the host sandbox unit retains the diagnosis.
+      StandardError = "journal+console";
     };
   };
   systemd.user.services.sandbox-appearance = lib.mkIf (inheritAppearance && !portals) {
     description = "Read host appearance settings on the sandbox session bus";
     wantedBy = [ "default.target" ];
     after = [ "dbus.socket" ];
-    environment.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
+    environment = {
+      DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
+      RUST_BACKTRACE = "1";
+    };
     serviceConfig = {
       ExecStart = "${launcher}/bin/nk --appearance-bridge unix:path=/run/host/appearance-bus";
       Type = "dbus";
       BusName = "org.freedesktop.portal.Desktop";
       Restart = "on-failure";
       RestartSec = 1;
+      StandardError = "journal+console";
     };
   };
   systemd.user.services.sandbox-xwayland = lib.mkIf startX {
