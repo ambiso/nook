@@ -39,6 +39,7 @@ let
     "DBUS_SESSION_BUS_ADDRESS"
     "DBUS_SYSTEM_BUS_ADDRESS"
     "NOOK_FORWARDED_ENVIRONMENT"
+    "NOOK_HOST_UID"
   ];
   resourceLimitNames = [
     "CPU"

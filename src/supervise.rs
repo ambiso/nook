@@ -1879,6 +1879,7 @@ pub fn enter(
         // from the caller so those explicit values can be restored afterward.
         run.arg(format!("--setenv=NOOK_FORWARDED_ENVIRONMENT={names}"));
     }
+    run.arg(format!("--setenv=NOOK_HOST_UID={}", profile.host_uid()?));
     for assignment in host_environment {
         run.arg(format!("--setenv={assignment}"));
     }

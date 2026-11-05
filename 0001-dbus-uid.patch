@@ -1,0 +1,18 @@
+diff --git a/dbus/dbus-sysdeps-unix.c b/dbus/dbus-sysdeps-unix.c
+index 87ba2d8..1dc3f4c 100644
+--- a/dbus/dbus-sysdeps-unix.c
++++ b/dbus/dbus-sysdeps-unix.c
+@@ -3116,6 +3116,13 @@ out:
+ dbus_bool_t
+ _dbus_append_user_from_current_process (DBusString *str)
+ {
++  const char *s;
++
++  s = _dbus_getenv ("NOOK_HOST_UID");
++
++  if (s && *s)
++     return _dbus_string_append_printf (str, "%s", s);
++
+   return _dbus_string_append_printf (str, DBUS_UID_FORMAT, _dbus_geteuid ());
+ }
+ 

@@ -43,7 +43,11 @@ rustPlatform.buildRustPackage {
     installShellFiles
     pkg-config
   ];
-  buildInputs = [ dbus ];
+  buildInputs = [ (dbus.overrideAttrs (oldAttrs: {
+    patches = (oldAttrs.patches or []) ++ [
+      ./0001-dbus-uid.patch
+    ];
+  })) ];
   nativeCheckInputs = [ cargo-deny ];
   postCheck = ''
     cargo deny --offline --locked check licenses
