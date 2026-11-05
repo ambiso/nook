@@ -55,6 +55,16 @@
           pkgs = pkgsFor system;
           inherit home-manager;
         };
+        # Regression check: red until the bridge handles differing host/guest UIDs.
+        portal-uid = import ./tests/portal-uid.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+        };
+        portal-uid-matched = import ./tests/portal-uid.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+          guestUid = 1002;
+        };
       });
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
       devShells = forAllSystems (
