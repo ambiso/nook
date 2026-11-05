@@ -114,25 +114,26 @@ struct Peer {
 
 impl Peer {
     fn connect(address: &str) -> Result<Self> {
-        let mut upstream = Channel::open_private(address)?;
-        upstream.register()?;
-        bus_call(
-            &upstream,
-            "AddMatch",
-            &["type='signal',sender='org.freedesktop.portal.Desktop'".into()],
-        )?;
-        bus_call(
-            &upstream,
-            "AddMatch",
-            &["type='signal',sender='org.freedesktop.portal.Documents'".into()],
-        )?;
+        let mut upstream = Channel::open_private(address)
+            .map_err(|error| format!("open host portal proxy: {error}"))?;
+        upstream
+            .register()
+            .map_err(|error| format!("register on host portal proxy: {error}"))?;
+        for name in [DESKTOP, DOCUMENTS] {
+            bus_call(
+                &upstream,
+                "AddMatch",
+                &[format!("type='signal',sender='{name}'").into()],
+            )
+            .map_err(|error| format!("subscribe to {name} signals: {error}"))?;
+        }
         Ok(Self {
             upstream,
             pending: HashMap::new(),
         })
     }
 
-    fn forward_call(&mut self, call: Message, sender: &str) -> Result<()> {
+    fn send_upstream(&mut self, call: &Message, sender: &str) -> Result<u32> {
         let destination = call
             .destination()
             .ok_or("portal call has no destination")?
@@ -153,6 +154,20 @@ impl Peer {
             .upstream
             .send(forwarded)
             .map_err(|_| "portal bus disconnected")?;
+        Ok(serial)
+    }
+
+    fn forward_call(
+        &mut self,
+        call: Message,
+        sender: &str,
+    ) -> std::result::Result<(), (Box<dyn std::error::Error>, Message)> {
+        let serial = match self.send_upstream(&call, sender) {
+            Ok(serial) => serial,
+            Err(error) => return Err((error, call)),
+        };
+        // Keep the original message: a libdbus duplicate loses its serial,
+        // which is needed to address the eventual reply to the guest caller.
         if !call.get_no_reply() {
             self.pending.insert(serial, call);
         }
@@ -222,6 +237,24 @@ impl Peer {
         }
         Ok(())
     }
+
+    fn fail_pending(&mut self, local: &Channel, reason: &str) -> Result<()> {
+        for (_, call) in self.pending.drain() {
+            fail_call(local, &call, reason)?;
+        }
+        Ok(())
+    }
+}
+
+fn fail_call(local: &Channel, call: &Message, reason: &str) -> Result<()> {
+    if call.get_no_reply() {
+        return Ok(());
+    }
+    let reason = CString::new(reason.replace('\0', " "))?;
+    local
+        .send(call.error(&"org.freedesktop.DBus.Error.Failed".into(), &reason))
+        .map_err(|_| "private session bus disconnected")?;
+    Ok(())
 }
 
 pub fn bridge(address: &str, appearance_only: bool) -> Result<i32> {
@@ -282,7 +315,16 @@ pub fn bridge(address: &str, appearance_only: bool) -> Result<i32> {
                 .ok_or("portal call has no sender")?
                 .to_string();
             if !peers.contains_key(&sender) {
-                peers.insert(sender.clone(), Peer::connect(address)?);
+                match Peer::connect(address) {
+                    Ok(peer) => {
+                        peers.insert(sender.clone(), peer);
+                    }
+                    Err(error) => {
+                        eprintln!("nk portal bridge: upstream connection failed: {error}");
+                        fail_call(&local, &call, &error.to_string())?;
+                        continue;
+                    }
+                }
             }
             // Calls addressed to this bridge's unique name are portal object
             // calls (Request.Close / Session.Close); use the host portal name.
@@ -298,13 +340,29 @@ pub fn bridge(address: &str, appearance_only: bool) -> Result<i32> {
                 };
                 call.set_destination(Some(name.into()));
             }
-            peers
+            if let Err((error, call)) = peers
                 .get_mut(&sender)
                 .expect("peer was inserted")
-                .forward_call(call, &sender)?;
+                .forward_call(call, &sender)
+            {
+                eprintln!("nk portal bridge: forwarding failed: {error}");
+                fail_call(&local, &call, &error.to_string())?;
+                if let Some(mut peer) = peers.remove(&sender) {
+                    peer.fail_pending(&local, &error.to_string())?;
+                }
+            }
         }
+        let mut failed_peers = Vec::new();
         for (sender, peer) in &mut peers {
-            peer.receive(&local, sender)?;
+            if let Err(error) = peer.receive(&local, sender) {
+                eprintln!("nk portal bridge: upstream receive failed: {error}");
+                failed_peers.push((sender.clone(), error.to_string()));
+            }
+        }
+        for (sender, error) in failed_peers {
+            if let Some(mut peer) = peers.remove(&sender) {
+                peer.fail_pending(&local, &error)?;
+            }
         }
     }
 }
