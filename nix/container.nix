@@ -180,6 +180,29 @@ in
       }
     ];
   };
+
+  # With an automatically allocated host UID, the guest account has no
+  # numeric UID in its NixOS closure. Start its manager by name after the
+  # guest's account activation has preserved the preseeded UID.
+  systemd.services.sandbox-user-manager = lib.mkIf (uid == null) {
+    description = "Start the sandbox user's systemd manager";
+    requires = [
+      "systemd-logind.service"
+      "sandbox-procfs.service"
+    ];
+    after = [
+      "systemd-logind.service"
+      "sandbox-procfs.service"
+    ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script = ''
+      guest_uid=$(${pkgs.coreutils}/bin/id -u -- ${lib.escapeShellArg username})
+      exec ${pkgs.systemd}/bin/systemctl start "user@$guest_uid.service"
+    '';
+  };
   environment.systemPackages = [
     pkgs.dbus
     pkgs.coreutils
@@ -220,9 +243,11 @@ in
     # the folded Home Manager configuration belong to that user only: other
     # accounts, notably root, must not default to a bus the user controls or
     # inherit its PATH (which may start with user-writable directories).
-    if [ "$(${pkgs.coreutils}/bin/id -u)" = ${toString uid} ]; then
-      export DBUS_SESSION_BUS_ADDRESS="''${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/${toString uid}/bus}"
-      ${lib.optionalString (homeManagerServiceName != "") ". /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh"}
+    if [ "$(${pkgs.coreutils}/bin/id -un)" = ${lib.escapeShellArg username} ]; then
+      export DBUS_SESSION_BUS_ADDRESS="''${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$EUID/bus}"
+      ${lib.optionalString (
+        homeManagerServiceName != ""
+      ) ". /etc/profiles/per-user/${username}/etc/profile.d/hm-session-vars.sh"}
     fi
   '';
   # Application metadata must resolve for every app in the guest: gio
@@ -258,24 +283,22 @@ in
         HOME=${lib.escapeShellArg home} \
         USER=${lib.escapeShellArg username} \
         LOGNAME=${lib.escapeShellArg username} \
-        XDG_RUNTIME_DIR=/run/user/${toString uid} \
-        ${pkgs.bash}/bin/bash -c ${
-          lib.escapeShellArg ''
-            . /etc/set-environment
-            exec ${pkgs.python3}/bin/python3 - <<'PYEOF'
-import os
-import re
-import shlex
+        XDG_RUNTIME_DIR=/run/user/$EUID \
+        ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg ''
+                      . /etc/set-environment
+                      exec ${pkgs.python3}/bin/python3 - <<'PYEOF'
+          import os
+          import re
+          import shlex
 
-ignored = {"OLDPWD", "PWD", "SHLVL", "_"}
-for variable, value in sorted(os.environ.items()):
-    if variable in ignored or variable.startswith("__"):
-        continue
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
-        print(f"{variable}={shlex.quote(value)}")
-PYEOF
-            ''
-        }
+          ignored = {"OLDPWD", "PWD", "SHLVL", "_"}
+          for variable, value in sorted(os.environ.items()):
+              if variable in ignored or variable.startswith("__"):
+                  continue
+              if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+                  print(f"{variable}={shlex.quote(value)}")
+          PYEOF
+        ''}
     '';
     mode = "0755";
   };
@@ -291,7 +314,9 @@ PYEOF
   systemd.services.sandbox-procfs = {
     description = "Prepare procfs for nested application sandboxes";
     wantedBy = [ "multi-user.target" ];
-    before = [ "user@${toString uid}.service" ];
+    before = [
+      (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
+    ];
     after = [ "local-fs.target" ];
     # nspawn's masked proc submounts become locked in a child user namespace.
     # Linux then refuses nested proc mounts as "too revealing", breaking both
@@ -307,23 +332,19 @@ PYEOF
   systemd.services.sandbox-ready = {
     description = "Activate the sandbox home after its user manager starts";
     wantedBy = [ "multi-user.target" ];
-    requires =
-      [
-        "user@${toString uid}.service"
-        "sandbox-procfs.service"
-      ]
-      ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
-    after =
-      [
-        "user@${toString uid}.service"
-        "sandbox-procfs.service"
-      ]
-      ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
+    requires = [
+      (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
+      "sandbox-procfs.service"
+    ]
+    ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
+    after = [
+      (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
+      "sandbox-procfs.service"
+    ]
+    ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
     environment = {
       HOME = home;
       USER = username;
-      XDG_RUNTIME_DIR = "/run/user/${toString uid}";
-      DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
     };
     path = [
       pkgs.coreutils
@@ -389,7 +410,7 @@ PYEOF
     wantedBy = [ "default.target" ];
     after = [ "dbus.socket" ];
     environment = {
-      DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
+      DBUS_SESSION_BUS_ADDRESS = "unix:path=%t/bus";
       RUST_BACKTRACE = "1";
     };
     serviceConfig = {
@@ -408,7 +429,7 @@ PYEOF
     wantedBy = [ "default.target" ];
     after = [ "dbus.socket" ];
     environment = {
-      DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/${toString uid}/bus";
+      DBUS_SESSION_BUS_ADDRESS = "unix:path=%t/bus";
       RUST_BACKTRACE = "1";
     };
     serviceConfig = {

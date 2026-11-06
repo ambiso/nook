@@ -1,7 +1,11 @@
-{ pkgs, home-manager }:
+{
+  pkgs,
+  home-manager,
+  guestUid ? 1000,
+}:
 let
   hostUid = 1002;
-  guestUid = 1000;
+  expectedGuestUid = if guestUid == null then hostUid else guestUid;
   nook = pkgs.callPackage ../. { };
   portalPython = pkgs.python3.withPackages (p: [
     p.dbus-python
@@ -27,7 +31,7 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = "nook-proxy-client-uid";
+  name = "nook-proxy-client-uid${if guestUid == null then "-matched" else ""}";
   nodes.machine = { ... }: {
     imports = [ (import ../nix/nixos.nix { inherit home-manager; }) ];
     nixpkgs.pkgs = pkgs.lib.mkForce pkgs;
@@ -44,7 +48,7 @@ pkgs.testers.runNixOSTest {
       home.stateVersion = "26.05";
       programs.nook = {
         enable = true;
-        guest.uid = guestUid;
+        guest = pkgs.lib.optionalAttrs (guestUid != null) { uid = guestUid; };
         sandboxes.dev = {
           shell = pkgs.bashInteractive;
           gpu = false;
@@ -82,7 +86,7 @@ pkgs.testers.runNixOSTest {
         "systemctl --user is-active --quiet nook-test-documents-portal.service'"
     )
     assert machine.succeed("id -u alice").strip() == "${toString hostUid}"
-    assert machine.succeed("su - alice -c 'nk launch dev -- id -u'").strip() == "${toString guestUid}"
+    assert machine.succeed("su - alice -c 'nk launch dev -- id -u'").strip() == "${toString expectedGuestUid}"
     # sd-bus reaches the host service through the proxy on all three revisions.
     # This keeps a proxy setup failure separate from libdbus authentication.
     machine.succeed(
@@ -92,8 +96,8 @@ pkgs.testers.runNixOSTest {
         "org.freedesktop.portal.Documents GetMountPoint'"
     )
     # This particular client links Nook's libdbus and inherits the environment
-    # supplied to a command by nk launch. Main sends the guest UID and fails;
-    # pr/2's host UID and the peer-credentials fix both authenticate.
+    # supplied to a command by nk launch. An explicit differing guest UID
+    # fails on main; the default matching UID authenticates.
     result = machine.succeed(
         "su - alice -c 'nk launch dev -- ${nook}/bin/nk --document-mountpoint'"
     )

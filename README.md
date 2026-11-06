@@ -60,8 +60,10 @@ and authorization rules. Importing only `nook.homeManagerModules.default` does
 not install those services.
 
 Host UIDs and primary GIDs may be automatically assigned by NixOS. The launcher
-resolves the configured owner account when starting an instance; guest IDs
-default to 1000/100 independently of the host. Remove any old
+resolves the configured owner account when starting an instance. The guest UID
+defaults to that account's UID, including when NixOS assigns it at activation;
+the guest primary GID defaults to 100. Existing instances need a stop and
+restart after changing their guest UID. Remove any old
 `programs.nook.host.uid` or `.gid` overrides when updating from the numeric-ID
 implementation.
 
@@ -505,12 +507,12 @@ Interactive desktop portals are **off by default**. Enabling `portals` permits
 host consent dialogs and access to selected host files through the document
 portal. Host appearance settings are inherited separately by default; disable
 `inheritAppearance` to turn off that separate connection when `portals` is also
-disabled. For now, portal-enabled sandboxes need a guest UID that matches the
-host account's UID. `xdg-dbus-proxy` cannot authenticate libdbus clients across
-that UID difference ([upstream issue](https://github.com/flatpak/xdg-dbus-proxy/issues/75)).
-For example, if `id -u` prints `1002`, set `programs.nook.guest.uid = 1002;`
-before rebuilding. This setting affects every profile. Restart an existing
-instance to apply the changed UID;
+disabled. The direct host session bus is enabled by default. Keeping the guest
+UID equal to the host UID avoids an
+[`xdg-dbus-proxy` authentication mismatch](https://github.com/flatpak/xdg-dbus-proxy/issues/75)
+for ordinary D-Bus clients and Nook's portal bridges. An explicitly different
+`programs.nook.guest.uid` can still trigger that mismatch; use the default UID
+when a profile needs those connections.
 Nook's ID-mapped home mount still presents the host owner's files as the guest
 owner. `nix = true` grants untrusted-client access to the host Nix daemon.
 The broker strips trusted-user authority even when the owner is trusted by the

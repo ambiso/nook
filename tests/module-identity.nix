@@ -155,11 +155,14 @@ assert disabled.home-manager.users.alice.home.activation ? removeNookDesktopEntr
 assert lib.hasInfix "/applications/nook-sandbox" (
   emptyProfiles.home-manager.users.alice.home.activation.removeNookDesktopEntries.data
 );
-assert !(builtins.hasAttr "nook-desktop-entries" (
-  emptyProfiles.home-manager.users.alice.systemd.user.services
-));
+assert
+  !(builtins.hasAttr "nook-desktop-entries" (
+    emptyProfiles.home-manager.users.alice.systemd.user.services
+  ));
 assert automatic.users.groups.alice.gid == null;
-assert guest.guest.uid == 1000 && guest.guest.gid == 100;
+assert guest.guest.uid == null && guest.guest.gid == 100;
+assert guest.sandboxes.dev._container.users.users.alice.uid == null;
+assert explicit.home-manager.users.alice.programs.nook.guest.uid == 4242;
 assert lib.elem "XDG_CURRENT_DESKTOP" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "TERM" guest.sandboxes.dev.hostEnvironment;
 assert lib.elem "COLORTERM" guest.sandboxes.dev.hostEnvironment;

@@ -10,6 +10,11 @@ let
   inherit (lib) types;
   homeConfig = config;
   outer = config.programs.nook;
+  declaredHostUid =
+    if osConfig == null then
+      null
+    else
+      lib.attrByPath [ "users" "users" homeConfig.home.username "uid" ] null osConfig;
   hostTimeZone = outer.host.timeZone;
   launcher = outer.package;
   desktopEnvironmentVariables = [
@@ -213,6 +218,9 @@ let
           inherit (mount) readOnly;
         }
       ) cfg.mounts;
+      # A configured host UID can be folded into the guest closure. If NixOS
+      # allocates the host UID at activation, the supervisor seeds that UID in
+      # the fresh guest /etc/passwd before the guest's own activation runs.
       uid = outer.guest.uid;
       gid = outer.guest.gid;
       defaultNetworkArgs = [
@@ -241,10 +249,7 @@ let
       };
 
       homeManagerServiceName =
-        if homeManagerEnabled then
-          "home-manager-${guestUtils.escapeSystemdPath username}.service"
-        else
-          "";
+        if homeManagerEnabled then "home-manager-${guestUtils.escapeSystemdPath username}.service" else "";
 
       # Home Manager is folded into the guest's own NixOS configuration: the
       # guest imports home-manager's NixOS module (guestHomeManagerModule), so
@@ -253,16 +258,21 @@ let
       # the per-user profile (/etc/profiles) from the merged package set. Nook
       # keeps no separate activation pipeline and no merged app package.
       guestHomeManagerModule =
-        { config, lib, pkgs, ... }:
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
         let
           # OpenSSH refuses to include files it does not own, and the guest's
           # store mount is not ID-translated, so store symlinks must never
           # reach ~/.ssh/config. Materialize the managed file instead, but
           # replace an earlier materialization only when it still matches the
           # previous generation, so user edits stay protected.
-          managesSshConfig = lib.any (
-            file: file.enable && file.target == ".ssh/config"
-          ) (builtins.attrValues guestHome.home.file);
+          managesSshConfig = lib.any (file: file.enable && file.target == ".ssh/config") (
+            builtins.attrValues guestHome.home.file
+          );
           guestHome = config.home-manager.users.${username};
           # HM finds the previous generation through this link. With its GC
           # roots disabled, HM no longer writes it, which would silently stop
@@ -309,7 +319,7 @@ let
               # queuing, and HM's reloadSystemd must act on a running manager
               # or user services never start.
               waitUserManager = pkgs.writeShellScript "nook-wait-user-manager-${name}" ''
-                export XDG_RUNTIME_DIR=/run/user/${toString uid}
+                export XDG_RUNTIME_DIR=/run/user/$EUID
                 for _ in $(seq 1 300); do
                   status=$(${pkgs.systemd}/bin/systemctl --user is-system-running 2>/dev/null || true)
                   case "$status" in
@@ -327,8 +337,12 @@ let
               # sandbox-ready waits for this unit, so entry stays closed until
               # the activation settles.
               before = lib.mkForce [ ];
-              requires = [ "user@${toString uid}.service" ];
-              after = [ "user@${toString uid}.service" ];
+              requires = [
+                (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
+              ];
+              after = [
+                (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
+              ];
               serviceConfig = {
                 ExecStartPre = [
                   waitUserManager
@@ -369,16 +383,17 @@ let
 
       activation = pkgs.writeShellScript "sandbox-activate-${name}" ''
         set -eu
+        export XDG_RUNTIME_DIR=/run/user/$EUID
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
         status=$(${pkgs.systemd}/bin/systemctl --user is-system-running --wait || true)
         case "$status" in
           running | degraded) ;;
           *) echo "User manager failed: $status" >&2; exit 1 ;;
         esac
         ${lib.optionalString cfg.portals "${pkgs.systemd}/bin/systemctl --user start sandbox-portals.service"}
-        ${lib.optionalString
-          (cfg.inheritAppearance && !cfg.portals)
-          "${pkgs.systemd}/bin/systemctl --user start sandbox-appearance.service"
-        }
+        ${lib.optionalString (
+          cfg.inheritAppearance && !cfg.portals
+        ) "${pkgs.systemd}/bin/systemctl --user start sandbox-appearance.service"}
       '';
 
       # Home Manager activation no longer has a recovery command: the guest's
@@ -414,7 +429,7 @@ let
         export HOME=${lib.escapeShellArg home}
         export USER=${lib.escapeShellArg username}
         export LOGNAME=${lib.escapeShellArg username}
-        export XDG_RUNTIME_DIR=/run/user/${toString uid}
+        export XDG_RUNTIME_DIR=/run/user/$EUID
 
         # Static guest session values: NixOS generates them (system and
         # folded Home Manager) in /etc/set-environment.
@@ -424,6 +439,7 @@ let
           export "''${forwarded_names[index]}=''${forwarded_values[index]}"
         done
         unset NOOK_FORWARDED_ENVIRONMENT
+        export XDG_RUNTIME_DIR=/run/user/$EUID
 
         # Nook's wired session tools stay ahead of the profile PATH; the
         # boundary never forwards a host display or system bus.
@@ -431,7 +447,9 @@ let
         unset DBUS_SYSTEM_BUS_ADDRESS DISPLAY XAUTHORITY
         ${lib.optionalString cfg.startX "export DISPLAY=:0"}
         ${lib.optionalString cfg.hostSessionBus "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/host/session-bus"}
-        ${lib.optionalString (cfg.systemBusPolicies != { }) "export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/host/system-bus"}
+        ${lib.optionalString (
+          cfg.systemBusPolicies != { }
+        ) "export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/host/system-bus"}
         exec "$@"
       '';
 
@@ -605,7 +623,11 @@ let
             inherit hostTimeZone;
             inherit launcher;
           };
-          modules = [ ./container.nix ] ++ lib.optionals homeManagerEnabled [ guestHomeManagerModule ] ++ cfg.nixosModules;
+          modules = [
+            ./container.nix
+          ]
+          ++ lib.optionals homeManagerEnabled [ guestHomeManagerModule ]
+          ++ cfg.nixosModules;
         }).config;
       # Everything the guest's per-user profile exposes from share/ mirrors
       # this package; the host only needs application metadata (icons,
@@ -617,7 +639,7 @@ let
         ignoreCollisions = true;
       };
 
-            rules = policies: lib.mapAttrsToList (n: action: "--${action}=${n}") policies;
+      rules = policies: lib.mapAttrsToList (n: action: "--${action}=${n}") policies;
       # An application's extra policy (for example Signal's secrets access)
       # replaces an option default. Required portal rules must be added here,
       # otherwise that extra policy silently disables the selected portals.
@@ -683,9 +705,9 @@ let
           name
           username
           home
-          uid
           gid
           ;
+        uid = if uid == null then "host" else uid;
         identityVersion = 2;
         supervisorContract = 2;
         supervisorExecutable = "${launcher}/bin/.nook-root-wrapped";
@@ -1102,49 +1124,49 @@ let
               makeWrapper ${launcher}/bin/nk "$out/bin/nk-${name}" --set NOOK_PROFILES ${catalog} --add-flags "shell ${name} --"
               ln -s nk-${name} "$out/bin/sandbox-${name}"
               ${lib.optionalString (c.guiEntryPoint != null) ''
-              # The application executes inside the guest, against the running
-              # generation's per-user profile: upstream desktop entries launch
-              # by ID through the guest's desktop launcher (resolved by the
-              # guest's XDG data dirs; arguments substitute per the
-              # desktop-entry spec), profiles without desktop data run the
-              # resolved per-user binary directly. Either way the application
-              # outlives the entry command that started it. The host copy keeps
-              # the upstream desktop ID for window matching; its Exec becomes
-              # the single sandbox launch command, and upstream desktop actions
-              # are dropped (their nested Exec lines would bypass the
-              # sandbox).
-              destination="$out/share/applications/${desktop}"
-              if [ -f "${c._appData}/share/applications/${desktop}" ]; then
-                guestCommand="${c._desktopLauncher} ${desktop}"
-                cp "${c._appData}/share/applications/${desktop}" "$destination"
-              else
-                guestCommand="${c._applicationScope} /etc/profiles/per-user/${homeConfig.home.username}/bin/${baseNameOf c.guiEntryPoint}"
-                cp "${fallbackDesktop}/share/applications/${desktop}" "$destination"
-              fi
-              chmod u+w "$destination"
-              awk -v exec="Exec=$out/bin/${guiName} %U" '
-                /^[ \t]*\[/ { skip = ($0 ~ /^\[Desktop Action/); if (!skip) print; next }
-                skip { next }
-                /^(Actions|X-Flatpak)[ \t]*=/ { next }
-                /^Exec[ \t]*=/ { print exec; next }
-                { print }
-              ' "$destination" > "$destination.tmp"
-              mv -T "$destination.tmp" "$destination"
-              # Selecting a GUI entrypoint opts into application search.
-              # Upstream visibility flags must not hide this launcher from
-              # GNOME.
-              desktop-file-edit --set-key=TryExec --set-value="$out/bin/${guiName}" \
-                --set-key=DBusActivatable --set-value=false \
-                --remove-key=Hidden --remove-key=NoDisplay \
-                --remove-key=OnlyShowIn --remove-key=NotShowIn "$destination"
-              ${lib.optionalString (c.desktopNameSuffix != "") ''
-                original_name=$(sed -n "s/^Name=//p" "$destination" | head -n1)
-                desktop-file-edit --set-name="$original_name"${lib.escapeShellArg c.desktopNameSuffix} "$destination"
-              ''}
-                makeWrapper ${launcher}/bin/nk "$out/bin/${guiName}" \
-                  --set NOOK_PROFILES ${catalog} \
-                  --add-flags "launch ${name} --" \
-                  --add-flags "$guestCommand"
+                # The application executes inside the guest, against the running
+                # generation's per-user profile: upstream desktop entries launch
+                # by ID through the guest's desktop launcher (resolved by the
+                # guest's XDG data dirs; arguments substitute per the
+                # desktop-entry spec), profiles without desktop data run the
+                # resolved per-user binary directly. Either way the application
+                # outlives the entry command that started it. The host copy keeps
+                # the upstream desktop ID for window matching; its Exec becomes
+                # the single sandbox launch command, and upstream desktop actions
+                # are dropped (their nested Exec lines would bypass the
+                # sandbox).
+                destination="$out/share/applications/${desktop}"
+                if [ -f "${c._appData}/share/applications/${desktop}" ]; then
+                  guestCommand="${c._desktopLauncher} ${desktop}"
+                  cp "${c._appData}/share/applications/${desktop}" "$destination"
+                else
+                  guestCommand="${c._applicationScope} /etc/profiles/per-user/${homeConfig.home.username}/bin/${baseNameOf c.guiEntryPoint}"
+                  cp "${fallbackDesktop}/share/applications/${desktop}" "$destination"
+                fi
+                chmod u+w "$destination"
+                awk -v exec="Exec=$out/bin/${guiName} %U" '
+                  /^[ \t]*\[/ { skip = ($0 ~ /^\[Desktop Action/); if (!skip) print; next }
+                  skip { next }
+                  /^(Actions|X-Flatpak)[ \t]*=/ { next }
+                  /^Exec[ \t]*=/ { print exec; next }
+                  { print }
+                ' "$destination" > "$destination.tmp"
+                mv -T "$destination.tmp" "$destination"
+                # Selecting a GUI entrypoint opts into application search.
+                # Upstream visibility flags must not hide this launcher from
+                # GNOME.
+                desktop-file-edit --set-key=TryExec --set-value="$out/bin/${guiName}" \
+                  --set-key=DBusActivatable --set-value=false \
+                  --remove-key=Hidden --remove-key=NoDisplay \
+                  --remove-key=OnlyShowIn --remove-key=NotShowIn "$destination"
+                ${lib.optionalString (c.desktopNameSuffix != "") ''
+                  original_name=$(sed -n "s/^Name=//p" "$destination" | head -n1)
+                  desktop-file-edit --set-name="$original_name"${lib.escapeShellArg c.desktopNameSuffix} "$destination"
+                ''}
+                  makeWrapper ${launcher}/bin/nk "$out/bin/${guiName}" \
+                    --set NOOK_PROFILES ${catalog} \
+                    --add-flags "launch ${name} --" \
+                    --add-flags "$guestCommand"
               ''}
             ''
           ) cfg
@@ -1186,9 +1208,14 @@ in
       description = "Module applied to every sandbox. Use mkDefault for scalar defaults that individual profiles may override.";
     };
     guest.uid = lib.mkOption {
-      type = types.ints.between 1 99999;
-      default = 1000;
-      description = "User ID inside the guest, independent of the host account.";
+      type = types.nullOr (types.ints.between 1 99999);
+      default = declaredHostUid;
+      defaultText = lib.literalExpression "osConfig.users.users.\${config.home.username}.uid or null";
+      description = ''
+        User ID inside the guest. Defaults to the host account's UID. When the
+        host assigns that UID at activation, null tells Nook to resolve it at
+        launch. Set a number explicitly only to use a different guest UID.
+      '';
     };
     guest.gid = lib.mkOption {
       type = types.ints.between 1 99999;

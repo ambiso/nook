@@ -1313,6 +1313,27 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             .arg(profile.dir.join("root"))
             .arg(&root),
     )?;
+    if profile.get("uid")? == "host" {
+        // NixOS keeps the UID of an existing account when its declarative UID
+        // is null. Seed only this fresh, root-owned image: the host account's
+        // ID was resolved from the account database, and no persistent home or
+        // host passwd file is changed.
+        let username = profile.get("username")?;
+        if username
+            .bytes()
+            .any(|byte| matches!(byte, b':' | b'\n' | b'\r'))
+        {
+            return Err("invalid sandbox username for passwd entry".into());
+        }
+        fs::write(
+            root.join("etc/passwd"),
+            format!(
+                "{username}:x:{}:{}::/var/empty:/bin/sh\n",
+                profile.host_uid()?,
+                profile.guest_gid()?
+            ),
+        )?;
+    }
     // The fresh tree belongs to root; the application's home belongs to its
     // container user before nspawn applies its private user namespace mapping.
     let home = root.join(profile.get("home")?.trim_start_matches('/'));
@@ -1987,11 +2008,9 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
             }
             match String::from_utf8_lossy(&output.stdout).trim() {
                 "active" | "inactive" => break,
-                "failed" => {
-                    return Err("Home Manager activation failed; entry stays closed".into())
-                }
+                "failed" => return Err("Home Manager activation failed; entry stays closed".into()),
                 _ if Instant::now() > deadline => {
-                    return Err("Home Manager activation timed out".into())
+                    return Err("Home Manager activation timed out".into());
                 }
                 _ => thread::sleep(Duration::from_millis(200)),
             }

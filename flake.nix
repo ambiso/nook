@@ -63,11 +63,16 @@
         portal-uid-matched = import ./tests/portal-uid.nix {
           pkgs = pkgsFor system;
           inherit home-manager;
-          guestUid = 1002;
+          guestUid = null;
         };
         proxy-client-uid = import ./tests/proxy-client-uid.nix {
           pkgs = pkgsFor system;
           inherit home-manager;
+        };
+        proxy-client-uid-matched = import ./tests/proxy-client-uid.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+          guestUid = null;
         };
       });
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);

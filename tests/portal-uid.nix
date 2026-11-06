@@ -34,7 +34,7 @@ let
   '';
 in
 pkgs.testers.runNixOSTest {
-  name = "nook-portal-uid-${toString guestUid}";
+  name = "nook-portal-uid-${if guestUid == null then "default" else toString guestUid}";
   nodes.machine = { ... }: {
     imports = [ (import ../nix/nixos.nix { inherit home-manager; }) ];
     nixpkgs.pkgs = pkgs.lib.mkForce pkgs;
@@ -51,7 +51,6 @@ pkgs.testers.runNixOSTest {
       home.stateVersion = "26.05";
       programs.nook = {
         enable = true;
-        guest.uid = guestUid;
         sandboxes.dev = {
           shell = pkgs.bashInteractive;
           gpu = false;
@@ -61,7 +60,8 @@ pkgs.testers.runNixOSTest {
           portals = false;
           inheritAppearance = true;
         };
-      };
+      }
+      // pkgs.lib.optionalAttrs (guestUid != null) { guest.uid = guestUid; };
     };
     # The host service answers one Settings call, without a display server or
     # the full desktop portal stack. The D-Bus proxy and guest bridge are real.
@@ -88,7 +88,9 @@ pkgs.testers.runNixOSTest {
         "systemctl --user is-active --quiet nook-test-appearance-portal.service'"
     )
     assert machine.succeed("id -u alice").strip() == "${toString hostUid}"
-    assert machine.succeed("su - alice -c 'nk launch dev -- id -u'").strip() == "${toString guestUid}"
+    assert machine.succeed("su - alice -c 'nk launch dev -- id -u'").strip() == "${
+      toString (if guestUid == null then hostUid else guestUid)
+    }"
     # sd-bus can reach the host service through the filtered proxy even when
     # the IDs differ. This rules out a missing host service or proxy socket.
     direct = machine.succeed(
@@ -108,8 +110,8 @@ pkgs.testers.runNixOSTest {
     )
     # dbus-send uses the guest's ordinary libdbus. Nook's bridge first
     # authenticates to the guest bus, then to the host's filtered proxy.
-    # The mismatched run is the regression check. Setting guest.uid to the
-    # host's 1002 is the control: the same call should then succeed.
+    # The explicit mismatch is the regression check. With no guest UID
+    # override, the host's declared 1002 is the control.
     reply = machine.succeed(
         "su - alice -c 'nk launch dev -- dbus-send --session --print-reply "
         "--reply-timeout=5000 --dest=org.freedesktop.portal.Desktop "

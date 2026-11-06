@@ -506,9 +506,14 @@ impl Profile {
         if !valid_name(p.get("name")?) {
             return Err("invalid profile name".into());
         }
-        for name in ["uid", "gid"] {
-            let _: u32 = p.get(name)?.parse()?;
+        if p.get("uid")? == "host" {
+            if !p.values.contains_key("identityVersion") {
+                return Err("dynamic guest UID requires an owner-name profile".into());
+            }
+        } else {
+            let _: u32 = p.get("uid")?.parse()?;
         }
+        let _: u32 = p.get("gid")?.parse()?;
         if p.host_uid()? == 0
             || p.host_gid()? == 0
             || p.guest_uid()? == 0
@@ -554,7 +559,11 @@ impl Profile {
             .parse()?)
     }
     pub fn guest_uid(&self) -> Result<u32> {
-        Ok(self.get("uid")?.parse()?)
+        if self.get("uid")? == "host" {
+            self.host_uid()
+        } else {
+            Ok(self.get("uid")?.parse()?)
+        }
     }
     pub fn guest_gid(&self) -> Result<u32> {
         Ok(self.get("gid")?.parse()?)
