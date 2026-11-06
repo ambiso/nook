@@ -700,47 +700,55 @@ let
           readOnly = true;
         }
       ];
-      manifest = pkgs.writeText "sandbox-profile-${name}" (textPairs {
-        inherit
-          name
-          username
-          home
-          gid
-          ;
-        uid = if uid == null then "host" else uid;
-        identityVersion = 2;
-        supervisorContract = 2;
-        supervisorExecutable = "${launcher}/bin/.nook-root-wrapped";
-        shell = "${lib.getExe shellPackage}";
-        entry = entry;
-        homeManagerService = homeManagerServiceName;
-        desktopLauncher = desktopLauncher;
-        exportDesktopEntries = if cfg.exportDesktopEntries then 1 else 0;
-        # Exported launchers outlive this generation: name the launcher by
-        # its stable profile path rather than a store path.
-        desktopExec = "${homeConfig.home.profileDirectory}/bin/nk";
-        init = "${container.system.build.toplevel}/init";
-        activation = activation;
-        system = "${container.system.build.toplevel}";
-        hostname = container.networking.hostName;
-        state = stateRoot;
-        persistent = if cfg.persistent then 1 else 0;
-        network = if cfg.network then 1 else 0;
-        gpu = if cfg.gpu then 1 else 0;
-        startX = if cfg.startX then 1 else 0;
-        podman = if cfg.podman then 1 else 0;
-        audio = if cfg.audio then 1 else 0;
-        nix = if nixEnabled then 1 else 0;
-        nixBuildLogs = if cfg.nixBuildLogs then 1 else 0;
-        hostSessionBus = if cfg.hostSessionBus then 1 else 0;
-        portals = if cfg.portals then 1 else 0;
-        inheritAppearance = if cfg.inheritAppearance then 1 else 0;
-        extraSystemCalls = lib.concatStringsSep " " cfg.extraSystemCalls;
-        resourceLimits = lib.concatStringsSep "\n" (
-          lib.mapAttrsToList (limit: value: "${limit}=${toString value}") resourceLimits
-        );
-        portalAppId = "eu.ambiso.sandbox.profile_${lib.replaceStrings [ "-" ] [ "_" ] name}";
-      });
+      manifest = pkgs.writeText "sandbox-profile-${name}" (
+        textPairs (
+          {
+            inherit
+              name
+              username
+              home
+              gid
+              ;
+            uid = if uid == null then "host" else uid;
+            identityVersion = 2;
+            supervisorContract = 2;
+            supervisorExecutable = "${launcher}/bin/.nook-root-wrapped";
+            shell = "${lib.getExe shellPackage}";
+            entry = entry;
+            homeManagerService = homeManagerServiceName;
+            desktopLauncher = desktopLauncher;
+            exportDesktopEntries = if cfg.exportDesktopEntries then 1 else 0;
+            # Exported launchers outlive this generation: name the launcher by
+            # its stable profile path rather than a store path.
+            desktopExec = "${homeConfig.home.profileDirectory}/bin/nk";
+            init = "${container.system.build.toplevel}/init";
+            activation = activation;
+            system = "${container.system.build.toplevel}";
+            hostname = container.networking.hostName;
+            state = stateRoot;
+            persistent = if cfg.persistent then 1 else 0;
+            network = if cfg.network then 1 else 0;
+            podman = if cfg.podman then 1 else 0;
+            audio = if cfg.audio then 1 else 0;
+            nix = if nixEnabled then 1 else 0;
+            nixBuildLogs = if cfg.nixBuildLogs then 1 else 0;
+            hostSessionBus = if cfg.hostSessionBus then 1 else 0;
+            portals = if cfg.portals then 1 else 0;
+            inheritAppearance = if cfg.inheritAppearance then 1 else 0;
+            extraSystemCalls = lib.concatStringsSep " " cfg.extraSystemCalls;
+            resourceLimits = lib.concatStringsSep "\n" (
+              lib.mapAttrsToList (limit: value: "${limit}=${toString value}") resourceLimits
+            );
+            portalAppId = "eu.ambiso.sandbox.profile_${lib.replaceStrings [ "-" ] [ "_" ] name}";
+          }
+          // lib.optionalAttrs outer.hostIntegration.enable {
+            # These values are only used by the standalone host install preview.
+            # Keep NixOS's established guest manifest unchanged.
+            gpu = if cfg.gpu then 1 else 0;
+            startX = if cfg.startX then 1 else 0;
+          }
+        )
+      );
       mountFile = pkgs.writeText "sandbox-mounts-${name}" (
         "nook-mounts-v2\n"
         + lib.concatMapStrings (

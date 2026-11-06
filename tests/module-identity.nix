@@ -150,6 +150,8 @@ assert lib.any (
   a: !a.assertion && lib.hasInfix "cannot forward Nook runtime variables: DISPLAY" a.message
 ) reservedForwardedEnvironment.home-manager.users.alice.assertions;
 assert automatic.users.users.alice.uid == null;
+assert !guest.hostIntegration.enable;
+assert !(automatic.home-manager.users.alice.home.activation ? installNookHost);
 assert emptyProfiles.home-manager.users.alice.home.activation ? removeNookDesktopEntries;
 assert disabled.home-manager.users.alice.home.activation ? removeNookDesktopEntries;
 assert lib.hasInfix "/applications/nook-sandbox" (
