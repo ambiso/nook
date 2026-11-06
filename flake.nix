@@ -35,6 +35,10 @@
         in
         {
           nook = pkgs.callPackage ./. { };
+          arch-host = pkgs.runCommand "nook-arch-host" { } ''
+            mkdir -p "$out/bin"
+            ln -s ${self.packages.${system}.nook}/bin/nook-host-install "$out/bin/nook-host-install"
+          '';
           default = self.packages.${system}.nook;
         }
       );
@@ -50,6 +54,15 @@
         module-identity = import ./tests/module-identity.nix {
           pkgs = pkgsFor system;
           inherit home-manager;
+        };
+        arch-host-profile = import ./tests/arch-host-profile.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+        };
+        arch-host-empty-profile = import ./tests/arch-host-profile.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+          enabled = false;
         };
         integration = import ./tests/sandbox-systemd.nix {
           pkgs = pkgsFor system;

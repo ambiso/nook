@@ -10,7 +10,7 @@ use nook::{
     config::{
         self, Profile, Result, catalog, valid_forwarded_environment_assignment, valid_instance,
     },
-    desktop, storage,
+    desktop, host_paths, storage,
 };
 use serde::Serialize;
 use std::{
@@ -197,7 +197,7 @@ fn prepare_deletion(profile: &Profile, instance: &str) -> Result<storage::SavedI
 fn delete_instance(profile: &Profile, instance: &str) -> Result<()> {
     require_stopped(profile, instance)?;
     let expected_profile = fs::canonicalize(&profile.dir)?;
-    let status = Command::new("/run/wrappers/bin/pkexec")
+    let status = Command::new(host_paths::pkexec())
         .arg(privileged_helper(profile)?)
         .arg("delete")
         .arg(profile.get("name")?)
@@ -321,7 +321,7 @@ fn migrate_stopped_profile(profile: &Profile) -> Result<()> {
     // lifecycle lock. An old Home Manager wrapper must not migrate a different
     // generation's state, so the helper verifies this exact installed profile.
     let expected_profile = fs::canonicalize(&profile.dir)?;
-    let status = Command::new("/run/wrappers/bin/pkexec")
+    let status = Command::new(host_paths::pkexec())
         .arg(privileged_helper(profile)?)
         .arg("migrate")
         .arg(profile.get("name")?)
@@ -384,12 +384,13 @@ fn start_instance(profile: &Profile, instance: &str) -> Result<()> {
             return Err(format!(
                 concat!(
                     "no matching host service: {}\n\n",
-                    "Rebuild NixOS with nook.nixosModules.default and this user's profiles enabled.\n",
-                    "If the module is already imported, check that NixOS and Home Manager ",
-                    "use the same Nook version and configuration.\n",
-                    "Running home-manager switch alone does not install host services."
-                ), unit
-            ).into());
+                    "Install this user's Nook host profiles, then retry.\n",
+                    "On NixOS, import nook.nixosModules.default. On other systemd hosts, ",
+                    "enable programs.nook.hostIntegration in standalone Home Manager."
+                ),
+                unit
+            )
+            .into());
         }
         return Err(format!("sandbox startup failed; inspect journalctl -u {unit}").into());
     }
@@ -467,7 +468,7 @@ fn launch(
     // systemd's machine bus transport needs host privileges to enter the
     // machine namespaces. Polkit authorizes the separate, narrow privileged
     // helper, which validates the installed profile and enters as its owner.
-    let mut enter = Command::new("/run/wrappers/bin/pkexec");
+    let mut enter = Command::new(host_paths::pkexec());
     enter
         .arg(privileged_helper(profile)?)
         .arg("enter")

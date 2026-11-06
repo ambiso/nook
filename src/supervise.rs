@@ -1,4 +1,7 @@
-use crate::config::{Mount, MountSource, Profile, Result, safe_mount, valid_instance};
+use crate::{
+    config::{Mount, MountSource, Profile, Result, safe_mount, valid_instance},
+    host_paths,
+};
 use std::{
     env,
     ffi::CString,
@@ -1802,7 +1805,7 @@ fn main_units_stopped(profile: &Profile) -> Result<bool> {
         ),
     ];
     for unit in units {
-        let output = Command::new("/run/current-system/sw/bin/systemctl")
+        let output = Command::new(host_paths::systemctl())
             .args(["show", "--property=ActiveState", "--value", &unit])
             .output()?;
         if !output.status.success() {
@@ -1864,7 +1867,7 @@ pub fn delete(profile: &Profile, instance: &str) -> Result<i32> {
     // The additional unit-state check covers supervisors from before this lock
     // moved out of the user-controlled state directory.
     let lock = instance_lock(profile, instance)?;
-    let state = Command::new("/run/current-system/sw/bin/systemctl")
+    let state = Command::new(host_paths::systemctl())
         .args([
             "show",
             "--property=ActiveState",
@@ -1935,7 +1938,7 @@ pub fn enter(
     // process's environment. The root-installed running profile restricts the
     // supplied assignments. systemd-run carries them to the guest command
     // without importing any other part of the host environment.
-    let mut run = Command::new("/run/current-system/sw/bin/systemd-run");
+    let mut run = Command::new(host_paths::systemd_run());
     run.env_clear();
     run.args([
         "--user",

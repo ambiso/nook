@@ -185,8 +185,9 @@ sudo nixos-rebuild switch --flake .#my-host
 nk launch dev
 ```
 
-A standalone `home-manager switch` installs launchers but cannot install the
-required host services. If the service is missing despite the NixOS import,
+A standalone `home-manager switch` without the experimental host integration
+installs launchers but cannot install the required host services. If the service
+is missing despite the NixOS import,
 check that the system and Home Manager use the same Nook version and profile
 configuration, then rebuild NixOS. On the old numeric-ID implementation, forcing
 only `programs.nook.host.uid` could make the launcher request a different service
@@ -304,6 +305,61 @@ Manager value for that command. Nook then sets the identity, runtime directory,
 command path, display sockets, and D-Bus addresses required to enter the
 sandbox. Those runtime variables cannot be configured through `environment` or
 `hostEnvironment`; use the corresponding Nook options instead.
+
+## Experimental Arch host installation
+
+Nook can evaluate its NixOS guests from standalone Home Manager on an Arch host.
+This prototype needs systemd, `systemd-nspawn`, Polkit with an authentication
+agent, a multi-user Nix installation, and a kernel/filesystem that support
+ID-mapped mounts. Enable the Arch host installer in the standalone Home Manager
+configuration:
+
+```nix
+outputs = { nixpkgs, home-manager, nook, ... }: {
+  homeConfigurations.alice = home-manager.lib.homeManagerConfiguration {
+    pkgs = import nixpkgs { system = "x86_64-linux"; };
+    modules = [
+      nook.homeManagerModules.default
+      {
+        home.username = "alice";
+        home.homeDirectory = "/home/alice";
+        home.stateVersion = "26.05";
+        programs.nook = {
+          enable = true;
+          hostIntegration.enable = true;
+          host.timeZone = "Europe/Berlin";
+          sandboxes.dev = {
+            nix = true;
+            gpu = false; # First verify a terminal-only guest.
+          };
+        };
+      }
+    ];
+  };
+};
+```
+
+Run `home-manager switch --flake .#alice`. Home Manager prints the immutable
+profile catalog and requested host access, then invokes `pkexec` if the host
+configuration changed. The authenticated installer writes per-profile systemd
+templates, the profile registry, and narrow Polkit rules, then reloads systemd.
+An unchanged catalog needs no prompt. `nix build .#arch-host` also exposes the
+installer as a separate Nix package for inspection or manual use. Launch with
+`nk launch dev` after activation.
+
+To remove every installed host profile, keep `hostIntegration.enable = true`,
+set `programs.nook.enable = false`, and run one more Home Manager switch. After
+that, the host integration option can be removed.
+
+The deployment source is trusted input: a sandbox or host process that can edit
+it can plant a change before you authorize the switch. Keep the flake and any
+imported files outside writable sandbox mounts, or use a root-owned deployment
+configuration if this is part of your security boundary. The preview helps you
+review changes but cannot make user-writable inputs trustworthy. The Arch
+installer does not yet reload running guests when a compatible profile changes;
+stop and relaunch them to apply a new generation. GPU integration, especially
+proprietary drivers, needs separate testing; wrapping `nk` with nixGL does not
+configure the guest's driver stack.
 
 ## Use
 

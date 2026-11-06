@@ -1071,6 +1071,9 @@ let
       path = c._profile;
     }) cfg
   );
+  # Disabling Nook with host integration still publishes an empty catalog so
+  # activation removes the owner's previously installed host profiles.
+  hostCatalog = if outer.enable then catalog else pkgs.linkFarm "sandbox-profiles-empty" [ ];
   # The launcher is installed on the host, while application packages live in
   # the guest. Export their icon data explicitly so GNOME can resolve Icon=.
   icons = pkgs.buildEnv {
@@ -1197,6 +1200,9 @@ in
       defaultText = lib.literalExpression "pkgs.callPackage <nook> { }";
       description = "Nook launcher package, shared by this user's host services and guest helpers.";
     };
+    hostIntegration.enable = lib.mkEnableOption ''
+      authenticated installation of Nook host units from standalone Home Manager
+    '';
     sandboxes = lib.mkOption {
       type = types.attrsOf profileType;
       default = { };
@@ -1236,6 +1242,26 @@ in
   };
   config = lib.mkMerge [
     { programs.nook.profiles = catalog; }
+    (lib.mkIf outer.hostIntegration.enable {
+      assertions = [
+        {
+          assertion = osConfig == null;
+          message = "programs.nook.hostIntegration is for standalone Home Manager; NixOS installs the host units through nook.nixosModules.default.";
+        }
+      ];
+      # The `current` check avoids a privilege prompt for unrelated switches.
+      # The root installer builds units from the immutable catalog rather than
+      # accepting user-supplied unit text. pkexec remains an admin decision.
+      home.activation.installNookHost = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        if ! ${launcher}/bin/nook-host-install current \
+          ${lib.escapeShellArg homeConfig.home.username} ${hostCatalog}; then
+          ${launcher}/bin/nook-host-install plan \
+            ${lib.escapeShellArg homeConfig.home.username} ${hostCatalog}
+          /usr/bin/pkexec ${launcher}/bin/nook-host-install install \
+            ${lib.escapeShellArg homeConfig.home.username} ${hostCatalog}
+        fi
+      '';
+    })
     (lib.mkIf outer.enable {
       assertions = lib.concatLists (
         lib.mapAttrsToList (

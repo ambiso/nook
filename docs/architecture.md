@@ -40,10 +40,12 @@ the `profileName` argument for configuration that needs to identify its
 template. Their `name` argument is Home Manager's own: the guest username.
 
 `nook.homeManagerModules.default` is also exported for standalone Home Manager
-use. It can generate profiles and launchers, but cannot install the privileged
-host services by itself. Normal NixOS installations should use the NixOS module,
-which installs each owner's profiles by username. Host numeric IDs are resolved
-at launch, so NixOS may assign them automatically during activation.
+use. It generates profiles and launchers. On a non-NixOS systemd host,
+`programs.nook.hostIntegration.enable` makes activation request administrator
+authorization to install the matching host units and Polkit rules. NixOS
+installations should use the NixOS module, which installs each owner's profiles
+by username. Host numeric IDs are resolved at launch, so NixOS may assign them
+automatically during activation.
 
 The flake exports a launcher package, app, development shell, and optional
 `overlays.default`. An overlay is not required. `programs.nook.package` can
