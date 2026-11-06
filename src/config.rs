@@ -355,10 +355,9 @@ impl Profile {
         Ok(home)
     }
 
-    // TODO(nook-legacy-main-home): Remove this helper together with
-    // storage::migrate_legacy_main_home, its serve() call, and the tests found
-    // by `rg legacy_main_home` in the next breaking release that drops
-    // supervisor-contract-1 compatibility.
+    // A running guest may keep a contract-1 profile across a host rebuild.
+    // Its home stays at the old path until it stops and the next `nk` command
+    // can migrate it, so working-directory translation follows that profile.
     fn uses_legacy_main_home_layout(&self) -> bool {
         self.values
             .get("supervisorContract")
@@ -374,10 +373,6 @@ impl Profile {
             return Ok(None);
         }
         let state = PathBuf::from(self.get("state")?);
-        // Contract 1 predates the uniform instance layout. A running guest can
-        // intentionally keep that generation across a host rebuild, so entry
-        // path translation must keep using its pinned legacy home until the
-        // guest is stopped and contract 2 migrates it atomically.
         if instance == "main" && self.flag("persistent") && self.uses_legacy_main_home_layout() {
             return Ok(Some(state.join("home")));
         }
@@ -837,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn working_directory_maps_a_legacy_main_home() {
+    fn working_directory_maps_a_running_legacy_main_home() {
         let directory = tempfile::tempdir().unwrap();
         let state = directory.path().join("dev");
         let mut profile = profile(&state, true);
@@ -854,10 +849,6 @@ mod tests {
         assert_eq!(
             profile.persistent_home("main").unwrap(),
             Some(state.join("home")),
-        );
-        assert_eq!(
-            profile.persistent_home("n-project").unwrap(),
-            Some(state.join("instances/n-project/home")),
         );
     }
 

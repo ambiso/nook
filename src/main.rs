@@ -303,6 +303,47 @@ fn is_running(profile: &Profile, instance: &str) -> bool {
     })
 }
 
+fn migrate_stopped_profile(profile: &Profile) -> Result<()> {
+    if !profile.flag("persistent") {
+        return Ok(());
+    }
+    let old_home = PathBuf::from(profile.get("state")?).join("home");
+    match fs::symlink_metadata(&old_home) {
+        Ok(_) => (),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    if is_running(profile, "main") {
+        return Ok(());
+    }
+
+    // Only the authenticated helper may take the supervisor's root-managed
+    // lifecycle lock. An old Home Manager wrapper must not migrate a different
+    // generation's state, so the helper verifies this exact installed profile.
+    let expected_profile = fs::canonicalize(&profile.dir)?;
+    let status = Command::new("/run/wrappers/bin/pkexec")
+        .arg(privileged_helper(profile)?)
+        .arg("migrate")
+        .arg(profile.get("name")?)
+        .arg(expected_profile)
+        .status()?;
+    if !status.success() {
+        return Err("privileged instance migration failed".into());
+    }
+    Ok(())
+}
+
+fn migrate_stopped_profiles(profiles: &[Profile]) {
+    for profile in profiles {
+        if let Err(error) = migrate_stopped_profile(profile) {
+            eprintln!(
+                "nk: could not migrate {}/main: {error}",
+                profile.values["name"]
+            );
+        }
+    }
+}
+
 fn new_ephemeral_id() -> Result<String> {
     let mut random = [0; 8];
     fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
@@ -681,6 +722,7 @@ fn run() -> Result<i32> {
         return portal::document_mountpoint();
     }
     let profiles = catalog(&cli.profiles.unwrap_or_else(default_profiles))?;
+    migrate_stopped_profiles(&profiles);
     let Some(action) = cli.command else {
         return match tui::select(&profiles)? {
             Some(choice) => launch(

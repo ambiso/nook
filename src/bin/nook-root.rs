@@ -27,6 +27,8 @@ enum Action {
     Enter(Enter),
     /// Delete a stopped named instance after pkexec authentication.
     Delete(Delete),
+    /// Move a stopped profile's old main home into the instance layout.
+    Migrate(Migrate),
 }
 
 #[derive(Args)]
@@ -53,6 +55,13 @@ struct Delete {
     #[arg(value_parser = parse_profile_name)]
     profile: String,
     instance: String,
+    expected_profile: PathBuf,
+}
+
+#[derive(Args)]
+struct Migrate {
+    #[arg(value_parser = parse_profile_name)]
+    profile: String,
     expected_profile: PathBuf,
 }
 
@@ -151,6 +160,16 @@ fn run() -> Result<i32> {
                 return Err("installed profile changed; retry the deletion".into());
             }
             supervise::delete(&profile, &request.instance)
+        }
+        Action::Migrate(request) => {
+            if env::var_os("PKEXEC_UID").is_none() {
+                return Err("migration requires pkexec authentication".into());
+            }
+            let profile = installed_user_profile(&request.profile)?;
+            if profile.dir != request.expected_profile {
+                return Err("installed profile changed; retry the migration".into());
+            }
+            supervise::migrate_stopped_main_home(&profile)
         }
         Action::Serve(target) => {
             if env::var_os("PKEXEC_UID").is_some() {

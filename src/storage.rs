@@ -70,16 +70,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Move the pre-instance-layout main home into the uniform instance tree.
-///
-/// This compatibility migration is deliberately a rename rather than a copy:
-/// it is atomic, preserves all metadata, and cannot leave two diverging homes.
-/// The caller must hold main's lifecycle lock so no second supervisor can race
-/// the move. Both source and destination parents are opened beneath the state
-/// directory before `renameat`, so path replacement cannot redirect the move.
-// TODO(nook-legacy-main-home): Remove in the breaking release described by
-// Profile::uses_legacy_main_home_layout.
-pub fn migrate_legacy_main_home(profile: &Profile) -> Result<()> {
+/// Atomically move a stopped profile's old main home into the instance tree.
+/// The caller holds main's root-managed lifecycle lock. Return whether there
+/// was an old home to move, so an ordinary `nk` invocation stays quiet.
+pub fn migrate_legacy_main_home(profile: &Profile) -> Result<bool> {
     if nix::unistd::geteuid().as_raw() != profile.host_uid()? {
         return Err("instance storage must be managed as its host owner".into());
     }
@@ -93,7 +87,7 @@ pub fn migrate_legacy_main_home(profile: &Profile) -> Result<()> {
         Err(error)
             if error.downcast_ref::<rustix::io::Errno>() == Some(&rustix::io::Errno::NOENT) =>
         {
-            return Ok(());
+            return Ok(false);
         }
         Err(error) => return Err(format!("cannot inspect legacy main home: {error}").into()),
     };
@@ -103,7 +97,7 @@ pub fn migrate_legacy_main_home(profile: &Profile) -> Result<()> {
     match statat(&destination, "home", AtFlags::SYMLINK_NOFOLLOW) {
         Ok(_) => {
             return Err(format!(
-                "both legacy main home {} and new main home {} contain entries; refusing to merge or overwrite them",
+                "both old main home {} and new main home {} exist; refusing to merge or overwrite them",
                 state_path.join("home").display(),
                 state_path.join("instances/main/home").display()
             )
@@ -115,7 +109,7 @@ pub fn migrate_legacy_main_home(profile: &Profile) -> Result<()> {
 
     verify_entry(&state, "home", &legacy)?;
     renameat(&state, "home", &destination, "home")?;
-    Ok(())
+    Ok(true)
 }
 
 pub struct SavedInstance {
@@ -371,13 +365,13 @@ mod tests {
         fs::create_dir(temporary.path().join("home")).unwrap();
         fs::write(temporary.path().join("home/keep"), "main data").unwrap();
 
-        migrate_legacy_main_home(&profile).unwrap();
+        assert!(migrate_legacy_main_home(&profile).unwrap());
         assert!(!temporary.path().join("home").exists());
         assert_eq!(
             fs::read_to_string(temporary.path().join("instances/main/home/keep")).unwrap(),
             "main data"
         );
-        migrate_legacy_main_home(&profile).unwrap();
+        assert!(!migrate_legacy_main_home(&profile).unwrap());
 
         fs::create_dir(temporary.path().join("home")).unwrap();
         fs::write(temporary.path().join("home/legacy"), "legacy").unwrap();

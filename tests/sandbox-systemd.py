@@ -75,16 +75,35 @@ with subtest("automatically allocated host UID becomes the guest UID"):
 
 
 try:
-    legacy_shared_storage = "/home/alice/.sandbox/check/home/SharedStorage"
+    old_shared_storage = "/home/alice/.sandbox/check/home/SharedStorage"
+    # Seed after boot: Nook's desktop-entry sync also invokes nk, so a boot
+    # service would migrate the fixture before this test reached it.
+    machine.succeed(
+        "install -d -o alice -g users -m 0700 /home/alice/.sandbox/check/home"
+    )
+    machine.succeed(f"mkdir -p {old_shared_storage}")
+    machine.succeed(
+        f"{MOUNT} -t tmpfs -o mode=0750,uid=1000,gid=100 tmpfs {old_shared_storage}"
+    )
     assert (
-        machine.succeed(f"findmnt -n -o FSTYPE -T {legacy_shared_storage}").strip()
+        machine.succeed(f"findmnt -n -o FSTYPE -T {old_shared_storage}").strip()
         == "tmpfs"
     )
     machine.succeed(
-        as_owner(f"echo mounted-storage > {legacy_shared_storage}/host-marker")
+        as_owner(f"echo mounted-storage > {old_shared_storage}/host-marker")
     )
     machine.succeed(as_owner("mkdir -p ~/managed-host; echo host-home > ~/managed-host/marker"))
-    machine.succeed("test ! -e /home/alice/.sandbox/check/home/Inbox")
+    # One nk invocation migrates *all* stopped configured profiles, not just
+    # the profile subsequently launched.
+    machine.succeed(
+        as_owner("mkdir -p ~/.local/state/nook/direct/home; echo direct > ~/.local/state/nook/direct/home/marker")
+    )
+    machine.succeed(as_owner("nk list --format=json >/tmp/nook-preflight.json"))
+    machine.succeed(
+        "test ! -e /home/alice/.sandbox/check/home; "
+        "test ! -e /home/alice/.local/state/nook/direct/home; "
+        "test $(cat /home/alice/.local/state/nook/direct/instances/main/home/marker) = direct"
+    )
     # Refusing a cold start must leave the service stopped.
     machine.fail(launcher("launch check --join -- true"))
     machine.fail("systemctl is-active --quiet sandbox-ualice-check@main.service")
@@ -97,10 +116,17 @@ try:
     machine.succeed("cmp /tmp/ns-a /tmp/ns-b")
     shared_storage = "/home/alice/.sandbox/check/instances/main/home/SharedStorage"
     machine.succeed(
-        "test ! -e /home/alice/.sandbox/check/home; "
         "test -d /home/alice/.sandbox/check/instances/main/home; "
         f"test $(findmnt -n -o FSTYPE -T {shared_storage}) = tmpfs"
     )
+    # A running instance must prevent a later invocation from moving a
+    # top-level home, even if one appears after it started.
+    machine.succeed(
+        as_owner("mkdir -p ~/.sandbox/check/home; echo running > ~/.sandbox/check/home/marker")
+    )
+    machine.succeed(as_owner("nk list --format=json >/tmp/nook-while-running.json"))
+    machine.succeed("test $(cat /home/alice/.sandbox/check/home/marker) = running")
+    machine.succeed(as_owner("mv ~/.sandbox/check/home ~/.sandbox/check/old-home-test"))
     inside("true", "--join")
     inside("""
         grep -Fx host-home ~/ManagedHost/marker

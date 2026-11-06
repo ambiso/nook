@@ -1273,10 +1273,18 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         return Err("missing systemd RuntimeDirectory".into());
     }
     if instance == "main" && profile.flag("persistent") {
-        // TODO(nook-legacy-main-home): Remove with the contract-1 home mapper.
-        as_user(profile, || {
-            crate::storage::migrate_legacy_main_home(profile)
-        })?;
+        let old_home = Path::new(profile.get("state")?).join("home");
+        match fs::symlink_metadata(&old_home) {
+            Ok(_) => {
+                return Err(format!(
+                    "old main home {} still exists; stop the sandbox and retry nk, or resolve a conflicting instances/main/home manually",
+                    old_home.display()
+                )
+                .into());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
     }
     let persistent_home = profile.persistent_home(instance)?;
     let reservation_key = format!(
@@ -1782,6 +1790,61 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             10
         }));
     }
+}
+
+fn main_units_stopped(profile: &Profile) -> Result<bool> {
+    let units = [
+        profile.unit("main")?,
+        format!(
+            "sandbox-{}-{}@main.service",
+            profile.host_uid()?,
+            profile.get("name")?
+        ),
+    ];
+    for unit in units {
+        let output = Command::new("/run/current-system/sw/bin/systemctl")
+            .args(["show", "--property=ActiveState", "--value", &unit])
+            .output()?;
+        if !output.status.success() {
+            return Err(format!("cannot check whether {unit} is running").into());
+        }
+        if !matches!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "inactive" | "failed"
+        ) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub fn migrate_stopped_main_home(profile: &Profile) -> Result<i32> {
+    if !geteuid().is_root() {
+        return Err("instance migration requires the privileged Nook helper".into());
+    }
+    if !profile.flag("persistent") || !main_units_stopped(profile)? {
+        return Ok(0);
+    }
+    let canonical = fs::canonicalize(&profile.dir)?;
+    if !canonical.starts_with("/nix/store/") {
+        return Err("instance migration requires an immutable installed profile".into());
+    }
+    check_supervisor_executable(profile)?;
+    // The lock also excludes a new supervisor starting between the two state
+    // checks. The second check covers older numeric units without this lock.
+    let _lock = instance_lock(profile, "main")?;
+    if !main_units_stopped(profile)? {
+        return Ok(0);
+    }
+    if as_user(profile, || {
+        crate::storage::migrate_legacy_main_home(profile)
+    })? {
+        eprintln!(
+            "nk: migrated {}/main to the instance home layout",
+            profile.get("name")?
+        );
+    }
+    Ok(0)
 }
 
 pub fn delete(profile: &Profile, instance: &str) -> Result<i32> {

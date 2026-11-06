@@ -294,30 +294,6 @@ pkgs.testers.runNixOSTest {
         test "$(stat -c '%t:%T' /dev/sandbox-test)" = "1:3"
       '';
     };
-    # An explicitly shared child mount beneath a backing home must receive
-    # its own owner ID mapping. Instance-private build caches use no such bind.
-    systemd.services.test-nested-storage = {
-      wantedBy = [ "multi-user.target" ];
-      after = [ "systemd-tmpfiles-setup.service" ];
-      path = [ pkgs.util-linux ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        home=/home/alice/.sandbox/check/instances/main/home
-        if [ ! -d "$home" ]; then
-          # Seed the legacy layout before the first sandbox start so the test
-          # exercises its automatic migration, including a nested mount.
-          home=/home/alice/.sandbox/check/home
-        fi
-        install -d -o alice -g users -m 0700 "$home"
-        mkdir -p "$home/SharedStorage"
-        if ! mountpoint -q "$home/SharedStorage"; then
-          mount -t tmpfs -o mode=0750,uid=1000,gid=100 tmpfs "$home/SharedStorage"
-        fi
-      '';
-    };
     systemd.user.services.test-x11-sockets = {
       wantedBy = [ "default.target" ];
       unitConfig.ConditionUser = "alice";
@@ -631,6 +607,7 @@ pkgs.testers.runNixOSTest {
       IMAGE = "${image}"
       POLICY = "${policy}"
       COREUTILS = "${pkgs.coreutils}"
+      MOUNT = "${pkgs.util-linux}/bin/mount"
       PORTAL_CLIENT = "${./sandbox-portal-client.py}"
       APPEARANCE_CLIENT = "${./sandbox-appearance-client.py}"
       DESKTOP_PYTHON = "${portalPython}/bin/python3"

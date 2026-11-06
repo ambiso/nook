@@ -67,6 +67,11 @@ restart after changing their guest UID. Remove any old
 `programs.nook.host.uid` or `.gid` overrides when updating from the numeric-ID
 implementation.
 
+Older releases stored a persistent main home at `<state>/home`. On the next
+`nk` invocation, Nook migrates stopped, configured profiles into the instance
+layout and skips running ones. See the [migration guide](docs/migration-xdg-state.md#main-instance-directory-layout)
+for conflicts or profiles that are no longer configured.
+
 For these desktop and development examples, enable unfree packages and graphics
 on the host and use the host's package set in Home Manager. Steam and many games
 need the 32-bit drivers on x86_64:
