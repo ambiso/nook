@@ -11,7 +11,7 @@ use nook::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     fs::OpenOptions,
     io::{self, Write},
@@ -48,6 +48,26 @@ struct Installed {
     catalog: PathBuf,
     profiles: Vec<String>,
     reload_pending: bool,
+    #[serde(default)]
+    managed: BTreeMap<String, ManagedProfile>,
+    #[serde(default)]
+    helper: Option<PathBuf>,
+    #[serde(default)]
+    policy: Option<String>,
+    // An interrupted switch can leave either generation on disk. Keep both
+    // identities until systemd has accepted the new units.
+    #[serde(default)]
+    previous_managed: BTreeMap<String, ManagedProfile>,
+    #[serde(default)]
+    previous_helper: Option<PathBuf>,
+    #[serde(default)]
+    previous_policy: Option<String>,
+}
+
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+struct ManagedProfile {
+    path: PathBuf,
+    unit: String,
 }
 
 struct DesiredProfile {
@@ -63,6 +83,14 @@ fn store_path(path: &Path) -> Result<PathBuf> {
         return Err(format!("expected immutable Nix store path: {}", path.display()).into());
     }
     Ok(canonical)
+}
+
+fn own_helper() -> Result<PathBuf> {
+    let executable = store_path(&env::current_exe()?)?;
+    let bin = executable
+        .parent()
+        .ok_or("installer has no bin directory")?;
+    store_path(&bin.join(".nook-root-wrapped"))
 }
 
 fn safe_exec_path(path: &Path) -> Result<()> {
@@ -112,6 +140,8 @@ fn limits(profile: &Profile) -> Result<String> {
 }
 
 fn unit(profile: &Profile, path: &Path, helper: &Path) -> Result<String> {
+    // Keep the service settings aligned with nix/nixos.nix. Arch adds
+    // NIX_REMOTE=daemon because the host's multi-user Nix daemon owns its store.
     let owner = profile.owner_key()?;
     let name = profile.get("name")?;
     let wrapper = helper.with_file_name("nook-root");
@@ -136,11 +166,26 @@ fn unit(profile: &Profile, path: &Path, helper: &Path) -> Result<String> {
     ))
 }
 
-fn catalog(username: &str, path: &Path) -> Result<(PathBuf, Vec<DesiredProfile>)> {
+#[derive(Clone, Copy)]
+enum CatalogMode {
+    Normal,
+    Legacy,
+    Pending,
+}
+
+fn catalog_with_mode(
+    username: &str,
+    path: &Path,
+    mode: CatalogMode,
+) -> Result<(PathBuf, Vec<DesiredProfile>)> {
     let canonical = store_path(path)?;
+    let expected_helper = if matches!(mode, CatalogMode::Normal) {
+        Some(own_helper()?)
+    } else {
+        None
+    };
     let mut profiles = Vec::new();
     let mut names = BTreeSet::new();
-    let mut common_helper = None;
     for entry in fs::read_dir(&canonical)? {
         let entry = entry?;
         let name = entry
@@ -177,14 +222,21 @@ fn catalog(username: &str, path: &Path) -> Result<(PathBuf, Vec<DesiredProfile>)
         {
             return Err("profile names an unexpected supervisor executable".into());
         }
-        if common_helper
+        // The catalog controls access policy, but it must not nominate a
+        // different executable for passwordless pkexec authorization.
+        if expected_helper
             .as_ref()
-            .is_some_and(|previous| previous != &helper)
+            .is_some_and(|expected| &helper != expected)
         {
-            return Err("all profiles of an owner must use one Nook helper version".into());
+            return Err("profile helper differs from this Nook installer's helper".into());
         }
-        common_helper = Some(helper.clone());
-        let rendered = unit(&profile, &profile_path, &helper)?;
+        // Pending records contain the exact unit text from the installer that
+        // began the switch. A newer installer may render a different unit.
+        let rendered = if matches!(mode, CatalogMode::Pending) {
+            String::new()
+        } else {
+            unit(&profile, &profile_path, &helper)?
+        };
         profiles.push(DesiredProfile {
             name,
             path: profile_path,
@@ -193,6 +245,37 @@ fn catalog(username: &str, path: &Path) -> Result<(PathBuf, Vec<DesiredProfile>)
         });
     }
     profiles.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok((canonical, profiles))
+}
+
+fn catalog(username: &str, path: &Path) -> Result<(PathBuf, Vec<DesiredProfile>)> {
+    catalog_with_mode(username, path, CatalogMode::Normal)
+}
+
+fn pending_catalog(
+    username: &str,
+    path: &Path,
+    record: &Installed,
+) -> Result<(PathBuf, Vec<DesiredProfile>)> {
+    let (canonical, mut profiles) = catalog_with_mode(username, path, CatalogMode::Pending)?;
+    if profiles.len() != record.managed.len()
+        || profiles.is_empty() != record.helper.is_none()
+        || profiles
+            .iter()
+            .any(|profile| Some(&profile.helper) != record.helper.as_ref())
+        || profiles.is_empty() != record.policy.is_none()
+    {
+        return Err("pending Nook host record differs from its immutable catalog".into());
+    }
+    for profile in &mut profiles {
+        let Some(expected) = record.managed.get(&profile.name) else {
+            return Err("pending Nook host record differs from its immutable catalog".into());
+        };
+        if expected.path != profile.path {
+            return Err("pending Nook host record differs from its immutable catalog".into());
+        }
+        profile.unit.clone_from(&expected.unit);
+    }
     Ok((canonical, profiles))
 }
 
@@ -208,7 +291,10 @@ fn installed(root: &Path, owner: &str) -> Result<Option<Installed>> {
     match fs::read(marker(root, owner)) {
         Ok(contents) => {
             let record: Installed = serde_json::from_slice(&contents)?;
-            if record.profiles.iter().any(|name| !valid_name(name)) {
+            if record.profiles.iter().any(|name| !valid_name(name))
+                || record.managed.keys().any(|name| !valid_name(name))
+                || record.previous_managed.keys().any(|name| !valid_name(name))
+            {
                 return Err("invalid installed Nook profile record".into());
             }
             Ok(Some(record))
@@ -220,24 +306,51 @@ fn installed(root: &Path, owner: &str) -> Result<Option<Installed>> {
 
 fn plan(username: &str, path: &Path) -> Result<()> {
     let owner = owner_key(username);
-    let (catalog, profiles) = catalog(username, path)?;
     let old = installed(Path::new("/"), &owner)?.unwrap_or_default();
+    let desired = store_path(path)?;
+    if old.reload_pending && old.catalog != desired {
+        return Err(format!(
+            "previous Nook host update is incomplete; retry its catalog {} before switching again",
+            old.catalog.display()
+        )
+        .into());
+    }
+    let (catalog, profiles) = if old.reload_pending {
+        pending_catalog(username, &desired, &old)?
+    } else {
+        catalog(username, &desired)?
+    };
     let new_names: BTreeSet<_> = profiles
         .iter()
         .map(|profile| profile.name.as_str())
         .collect();
     println!("Nook host update for {username:?}");
     println!("Catalog: {}", catalog.display());
+    if let Some(profile) = profiles.first() {
+        println!("Root helper: {}", profile.helper.display());
+    }
     for name in &old.profiles {
         if !new_names.contains(name.as_str()) {
             println!("  - {name}: remove host template and profile registration");
+            if let Some(unit) = active_instance(&owner, name)? {
+                println!("      stop {unit} before removal");
+            }
         }
+    }
+    if profiles.is_empty() && !old.profiles.is_empty() {
+        println!("  - shared helper and Polkit rule: remove");
     }
     for desired in &profiles {
         let registered = Path::new("/etc/sandbox/profiles")
             .join(&owner)
             .join(&desired.name);
-        if fs::canonicalize(&registered).is_ok_and(|path| path == desired.path) {
+        let unit = Path::new("/etc/systemd/system")
+            .join(format!("sandbox-{owner}-{}@.service", desired.name));
+        let helper = Path::new("/etc/sandbox/helpers").join(&owner);
+        if fs::read_link(&registered).ok().as_ref() == Some(&desired.path)
+            && file_matches(&unit, desired.unit.as_bytes())?
+            && fs::read_link(&helper).ok().as_ref() == Some(&desired.helper)
+        {
             continue;
         }
         let action = if old.profiles.contains(&desired.name) {
@@ -247,12 +360,19 @@ fn plan(username: &str, path: &Path) -> Result<()> {
         };
         let profile = Profile::load(&desired.path)?;
         println!("  {action} {}: {}", desired.name, desired.path.display());
+        if let Some(unit) = active_instance(&owner, &desired.name)? {
+            println!("      {unit} is running; changes apply after stop and relaunch");
+        }
         for permission in [
             "network",
+            "audio",
+            "gpu",
+            "startX",
             "portals",
             "inheritAppearance",
             "hostSessionBus",
             "nix",
+            "nixBuildLogs",
             "podman",
         ] {
             if profile.flag(permission) {
@@ -265,6 +385,15 @@ fn plan(username: &str, path: &Path) -> Result<()> {
                 mount.mode,
                 mount.source.to_string(),
                 mount.target
+            );
+        }
+        if profile.flag("network") && !profile.pasta.is_empty() {
+            println!("      pasta arguments: {:?}", profile.pasta);
+        }
+        if !profile.host_environment.is_empty() {
+            println!(
+                "      forwarded environment names: {:?}",
+                profile.host_environment
             );
         }
         if !profile.system_rules.is_empty() {
@@ -333,6 +462,7 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
         .set_permissions(fs::Permissions::from_mode(0o644))?;
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -345,12 +475,16 @@ fn symlink_atomic(path: &Path, target: &Path) -> Result<()> {
     drop(temporary);
     symlink(target, &temporary_path)?;
     fs::rename(temporary_path, path)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            fs::File::open(path.parent().ok_or("missing destination parent")?)?.sync_all()?;
+            Ok(())
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
@@ -362,6 +496,103 @@ fn entry_exists(path: &Path) -> Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+fn managed_profiles(profiles: &[DesiredProfile]) -> BTreeMap<String, ManagedProfile> {
+    profiles
+        .iter()
+        .map(|profile| {
+            (
+                profile.name.clone(),
+                ManagedProfile {
+                    path: profile.path.clone(),
+                    unit: profile.unit.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn unchanged_file_if_present(path: &Path, expected: &[u8]) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(fs::read(path)? == expected),
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn file_matches(path: &Path, expected: &[u8]) -> Result<bool> {
+    Ok(entry_exists(path)? && unchanged_file_if_present(path, expected)?)
+}
+
+fn unchanged_link_if_present(path: &Path, expected: &Path) -> Result<bool> {
+    Ok(!entry_exists(path)? || fs::read_link(path)? == expected)
+}
+
+fn unchanged_file_any_if_present(path: &Path, expected: &[&[u8]]) -> Result<bool> {
+    if !entry_exists(path)? {
+        return Ok(true);
+    }
+    for value in expected {
+        if file_matches(path, value)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn unchanged_link_any_if_present(path: &Path, expected: &[&Path]) -> Result<bool> {
+    if !entry_exists(path)? {
+        return Ok(true);
+    }
+    for value in expected {
+        if unchanged_link_if_present(path, value)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn active_instance(owner: &str, name: &str) -> Result<Option<String>> {
+    let pattern = format!("sandbox-{owner}-{name}@*.service");
+    let output = Command::new(host_paths::systemctl())
+        .args([
+            "list-units",
+            "--all",
+            "--plain",
+            "--full",
+            "--no-legend",
+            "--no-pager",
+            "--type=service",
+            "--state=active,activating,reloading,deactivating",
+        ])
+        .arg(&pattern)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!("could not check running instances of {name}").into());
+    }
+    let units = String::from_utf8(output.stdout)?;
+    Ok(units.split_whitespace().next().map(str::to_owned))
+}
+
+fn ensure_removed_profiles_stopped(
+    root: &Path,
+    owner: &str,
+    old_names: &BTreeSet<String>,
+    new_names: &BTreeSet<String>,
+) -> Result<()> {
+    if root == Path::new("/") {
+        for name in old_names.difference(new_names) {
+            if let Some(unit) = active_instance(owner, name)? {
+                return Err(format!(
+                    "stop {name}'s running instance {unit} before removing its host profile"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn polkit_rule(username: &str, owner: &str, profiles: &[DesiredProfile]) -> Result<String> {
@@ -415,7 +646,6 @@ fn install(username: &str, catalog_path: &Path, root: &Path) -> Result<()> {
         }
     }
     let owner = owner_key(username);
-    let (catalog, profiles) = catalog(username, catalog_path)?;
     let unit_dir = under(root, "/etc/systemd/system");
     let profile_dir = under(root, "/etc/sandbox/profiles").join(&owner);
     let helper_dir = under(root, "/etc/sandbox/helpers");
@@ -439,9 +669,47 @@ fn install(username: &str, catalog_path: &Path, root: &Path) -> Result<()> {
     lock.lock()?;
     // Read the previous generation only after taking the per-owner lock;
     // concurrent Home Manager switches must not remove each other's units.
-    let old = installed(root, &owner)?.unwrap_or_default();
+    let mut old = installed(root, &owner)?.unwrap_or_default();
+    let desired_catalog = store_path(catalog_path)?;
+    if old.reload_pending && old.catalog != desired_catalog {
+        return Err(format!(
+            "previous Nook host update is incomplete; retry its catalog {} before switching again",
+            old.catalog.display()
+        )
+        .into());
+    }
+    let (catalog, profiles) = if old.reload_pending {
+        pending_catalog(username, &desired_catalog, &old)?
+    } else {
+        catalog(username, &desired_catalog)?
+    };
+    // The first Arch prototype recorded names but not file identities. Derive
+    // them from its immutable catalog before writing a pending record, so a
+    // crash during this one-time upgrade remains safely retryable.
+    if !old.reload_pending && !old.profiles.is_empty() && old.managed.is_empty() {
+        let (_, previous) = catalog_with_mode(username, &old.catalog, CatalogMode::Legacy)?;
+        let previous_names: Vec<_> = previous
+            .iter()
+            .map(|profile| profile.name.clone())
+            .collect();
+        if previous_names != old.profiles {
+            return Err("old Nook catalog does not match its installed profile record".into());
+        }
+        old.managed = managed_profiles(&previous);
+        old.helper = previous.first().map(|profile| profile.helper.clone());
+        old.policy = Some(polkit_rule(username, &owner, &previous)?);
+    }
     let old_names: BTreeSet<_> = old.profiles.iter().cloned().collect();
     let new_names: BTreeSet<_> = profiles.iter().map(|p| p.name.clone()).collect();
+    let new_managed = managed_profiles(&profiles);
+    let new_helper = profiles.first().map(|profile| profile.helper.clone());
+    let new_policy = if old.reload_pending {
+        old.policy.clone()
+    } else if profiles.is_empty() {
+        None
+    } else {
+        Some(polkit_rule(username, &owner, &profiles)?)
+    };
     let unit_path = |name: &str| unit_dir.join(format!("sandbox-{owner}-{name}@.service"));
     let policy_path = policy_dir.join(format!("49-nook-{owner}.rules"));
     let helper_path = helper_dir.join(&owner);
@@ -460,16 +728,102 @@ fn install(username: &str, catalog_path: &Path, root: &Path) -> Result<()> {
     {
         return Err("host helper or Polkit rule already exists".into());
     }
+    // A root-owned record grants Nook ownership of these exact host files,
+    // not of any replacement an administrator may have installed later.
+    for name in &old_names {
+        let mut expected = Vec::new();
+        if let Some(profile) = old.managed.get(name) {
+            expected.push(profile);
+        }
+        if old.reload_pending {
+            if let Some(profile) = old.previous_managed.get(name) {
+                expected.push(profile);
+            }
+        }
+        if expected.is_empty() {
+            if !new_names.contains(name) {
+                return Err(format!(
+                    "cannot verify old files for {name}; reinstall its current catalog before removal"
+                )
+                .into());
+            }
+            continue;
+        }
+        let units: Vec<_> = expected.iter().map(|p| p.unit.as_bytes()).collect();
+        let links: Vec<_> = expected.iter().map(|p| p.path.as_path()).collect();
+        if unchanged_file_any_if_present(&unit_path(name), &units)?
+            && unchanged_link_any_if_present(&profile_dir.join(name), &links)?
+        {
+            continue;
+        }
+        return Err(format!(
+            "host files for {name} changed outside Nook; refusing to replace or remove them"
+        )
+        .into());
+    }
+    let helpers: Vec<_> = old
+        .helper
+        .iter()
+        .chain(old.previous_helper.iter().filter(|_| old.reload_pending))
+        .map(PathBuf::as_path)
+        .collect();
+    if helpers.is_empty() && new_names.is_empty() && entry_exists(&helper_path)? {
+        return Err(
+            "cannot verify old host helper; reinstall the current catalog before removal".into(),
+        );
+    }
+    if !unchanged_link_any_if_present(&helper_path, &helpers)? {
+        return Err("host helper changed outside Nook; refusing to replace or remove it".into());
+    }
+    let policies: Vec<_> = old
+        .policy
+        .iter()
+        .chain(old.previous_policy.iter().filter(|_| old.reload_pending))
+        .map(String::as_bytes)
+        .collect();
+    if policies.is_empty() && new_names.is_empty() && entry_exists(&policy_path)? {
+        return Err(
+            "cannot verify old Polkit rule; reinstall the current catalog before removal".into(),
+        );
+    }
+    if !unchanged_file_any_if_present(&policy_path, &policies)? {
+        return Err("Polkit rule changed outside Nook; refusing to replace or remove it".into());
+    }
+    // Removing the registry and Polkit rule would strand an active guest: nk
+    // could no longer load its profile to stop it. Refuse before writing the
+    // pending record or changing any host files.
+    ensure_removed_profiles_stopped(root, &owner, &old_names, &new_names)?;
     let save = |record: &Installed| -> Result<()> {
         write_atomic(&marker(root, &owner), &serde_json::to_vec(record)?)
     };
     // Once collision checks pass, record ownership of every path we may touch.
     // A failed write or interrupted switch can then be retried without treating
     // our partially installed files as somebody else's host configuration.
+    let previous_managed = if old.reload_pending {
+        old.previous_managed.clone()
+    } else {
+        old.managed.clone()
+    };
+    let previous_helper = if old.reload_pending {
+        old.previous_helper.clone()
+    } else {
+        old.helper.clone()
+    };
+    let previous_policy = if old.reload_pending {
+        old.previous_policy.clone()
+    } else {
+        old.policy.clone()
+    };
     save(&Installed {
         catalog: catalog.clone(),
         profiles: old_names.union(&new_names).cloned().collect(),
         reload_pending: true,
+        managed: new_managed.clone(),
+        helper: new_helper.clone(),
+        policy: new_policy.clone(),
+        previous_managed: previous_managed.clone(),
+        previous_helper: previous_helper.clone(),
+        previous_policy: previous_policy.clone(),
     })?;
     for profile in &profiles {
         write_atomic(&unit_path(&profile.name), profile.unit.as_bytes())?;
@@ -479,13 +833,14 @@ fn install(username: &str, catalog_path: &Path, root: &Path) -> Result<()> {
         remove_if_present(&unit_path(name))?;
         remove_if_present(&profile_dir.join(name))?;
     }
-    if let Some(profile) = profiles.first() {
-        symlink_atomic(&helper_path, &profile.helper)?;
-        write_atomic(
-            &policy_path,
-            polkit_rule(username, &owner, &profiles)?.as_bytes(),
-        )?;
-    } else if !old.catalog.as_os_str().is_empty() {
+    if let (Some(helper), Some(policy)) = (&new_helper, &new_policy) {
+        symlink_atomic(&helper_path, helper)?;
+        write_atomic(&policy_path, policy.as_bytes())?;
+    } else if old.helper.is_some()
+        || old.policy.is_some()
+        || previous_helper.is_some()
+        || previous_policy.is_some()
+    {
         remove_if_present(&helper_path)?;
         remove_if_present(&policy_path)?;
     }
@@ -493,7 +848,18 @@ fn install(username: &str, catalog_path: &Path, root: &Path) -> Result<()> {
         catalog,
         profiles: new_names.into_iter().collect(),
         reload_pending: root == Path::new("/"),
+        managed: new_managed,
+        helper: new_helper,
+        policy: new_policy,
+        previous_managed,
+        previous_helper,
+        previous_policy,
     };
+    if root != Path::new("/") {
+        record.previous_managed.clear();
+        record.previous_helper = None;
+        record.previous_policy = None;
+    }
     save(&record)?;
     if root == Path::new("/") {
         let status = Command::new(host_paths::systemctl())
@@ -503,9 +869,72 @@ fn install(username: &str, catalog_path: &Path, root: &Path) -> Result<()> {
             return Err("systemd daemon-reload failed; rerun Home Manager activation".into());
         }
         record.reload_pending = false;
+        record.previous_managed.clear();
+        record.previous_helper = None;
+        record.previous_policy = None;
         save(&record)?;
     }
     Ok(())
+}
+
+fn current(username: &str, catalog_path: &Path) -> Result<bool> {
+    let desired = store_path(catalog_path)?;
+    let owner = owner_key(username);
+    let Some(record) = installed(Path::new("/"), &owner)? else {
+        return Ok(false);
+    };
+    if record.reload_pending
+        || !record.previous_managed.is_empty()
+        || record.previous_helper.is_some()
+        || record.previous_policy.is_some()
+        || record.catalog != desired
+    {
+        return Ok(false);
+    }
+    let (_, profiles) = catalog(username, &desired)?;
+    if record.profiles
+        != profiles
+            .iter()
+            .map(|profile| profile.name.clone())
+            .collect::<Vec<_>>()
+    {
+        return Ok(false);
+    }
+    let expected_helper = profiles.first().map(|profile| profile.helper.clone());
+    let expected_policy = if profiles.is_empty() {
+        None
+    } else {
+        Some(polkit_rule(username, &owner, &profiles)?)
+    };
+    if record.managed != managed_profiles(&profiles)
+        || record.helper != expected_helper
+        || record.policy != expected_policy
+    {
+        return Ok(false);
+    }
+    let helper_path = Path::new("/etc/sandbox/helpers").join(&owner);
+    if let Some(profile) = profiles.first() {
+        if fs::read_link(&helper_path).ok().as_ref() != Some(&profile.helper) {
+            return Ok(false);
+        }
+    } else if entry_exists(&helper_path)? {
+        return Ok(false);
+    }
+    for profile in &profiles {
+        let unit_path = Path::new("/etc/systemd/system")
+            .join(format!("sandbox-{owner}-{}@.service", profile.name));
+        let profile_path = Path::new("/etc/sandbox/profiles")
+            .join(&owner)
+            .join(&profile.name);
+        if !file_matches(&unit_path, profile.unit.as_bytes())?
+            || fs::read_link(profile_path).ok().as_ref() != Some(&profile.path)
+        {
+            return Ok(false);
+        }
+    }
+    // Arch can keep Polkit's rules directory root-only. The root-owned record
+    // attests to that file; this fast path checks the host files Alice can read.
+    Ok(true)
 }
 
 fn run() -> Result<i32> {
@@ -513,35 +942,7 @@ fn run() -> Result<i32> {
         Action::Current {
             username,
             catalog: path,
-        } => {
-            let desired = store_path(&path)?;
-            let owner = owner_key(&username);
-            let old = installed(Path::new("/"), &owner)?;
-            // Polkit's rules directory can be root-only on Arch. The
-            // root-owned record attests that the rule was installed; this
-            // unprivileged fast path checks only files it may read.
-            Ok(
-                if old.is_some_and(|record| {
-                    !record.reload_pending
-                        && record.catalog == desired
-                        && (record.profiles.is_empty()
-                            || Path::new("/etc/sandbox/helpers").join(&owner).is_file())
-                        && record.profiles.iter().all(|name| {
-                            Path::new("/etc/systemd/system")
-                                .join(format!("sandbox-{owner}-{name}@.service"))
-                                .is_file()
-                                && Path::new("/etc/sandbox/profiles")
-                                    .join(&owner)
-                                    .join(name)
-                                    .exists()
-                        })
-                }) {
-                    0
-                } else {
-                    1
-                },
-            )
-        }
+        } => Ok(if current(&username, &path)? { 0 } else { 1 }),
         Action::Plan { username, catalog } => {
             plan(&username, &catalog)?;
             Ok(0)

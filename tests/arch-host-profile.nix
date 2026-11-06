@@ -2,6 +2,7 @@
   pkgs,
   home-manager,
   enabled ? true,
+  output ? "profiles",
 }:
 let
   home = home-manager.lib.homeManagerConfiguration {
@@ -15,16 +16,14 @@ let
         programs.nook = {
           enable = enabled;
           hostIntegration.enable = true;
-          sandboxes = pkgs.lib.optionalAttrs enabled {
-            dev = {
-              nix = true;
-              gpu = false;
-              audio = false;
-              inheritAppearance = false;
-              portals = false;
-              network = false;
-              hostSessionBus = false;
-            };
+          sandboxes.dev = {
+            nix = true;
+            gpu = false;
+            audio = false;
+            inheritAppearance = false;
+            portals = false;
+            network = false;
+            hostSessionBus = false;
           };
         };
       }
@@ -32,4 +31,8 @@ let
   };
 in
 assert home.config.home.activation ? installNookHost;
-home.config.programs.nook.profiles
+assert pkgs.lib.hasInfix "run /usr/bin/pkexec" home.config.home.activation.installNookHost.data;
+assert builtins.elem "linkGeneration" home.config.home.activation.installNookHost.after;
+assert builtins.elem "installPackages" home.config.home.activation.installNookHost.after;
+assert enabled || pkgs.lib.hasInfix "sandbox-profiles-empty" home.config.home.activation.installNookHost.data;
+if output == "activation" then home.activationPackage else home.config.programs.nook.profiles

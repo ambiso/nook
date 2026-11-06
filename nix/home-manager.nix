@@ -726,6 +726,8 @@ let
         state = stateRoot;
         persistent = if cfg.persistent then 1 else 0;
         network = if cfg.network then 1 else 0;
+        gpu = if cfg.gpu then 1 else 0;
+        startX = if cfg.startX then 1 else 0;
         podman = if cfg.podman then 1 else 0;
         audio = if cfg.audio then 1 else 0;
         nix = if nixEnabled then 1 else 0;
@@ -1252,12 +1254,12 @@ in
       # The `current` check avoids a privilege prompt for unrelated switches.
       # The root installer builds units from the immutable catalog rather than
       # accepting user-supplied unit text. pkexec remains an admin decision.
-      home.activation.installNookHost = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      home.activation.installNookHost = lib.hm.dag.entryAfter [ "linkGeneration" "installPackages" ] ''
         if ! ${launcher}/bin/nook-host-install current \
           ${lib.escapeShellArg homeConfig.home.username} ${hostCatalog}; then
           ${launcher}/bin/nook-host-install plan \
             ${lib.escapeShellArg homeConfig.home.username} ${hostCatalog}
-          /usr/bin/pkexec ${launcher}/bin/nook-host-install install \
+          run /usr/bin/pkexec ${launcher}/bin/nook-host-install install \
             ${lib.escapeShellArg homeConfig.home.username} ${hostCatalog}
         fi
       '';

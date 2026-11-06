@@ -309,47 +309,122 @@ sandbox. Those runtime variables cannot be configured through `environment` or
 ## Experimental Arch host installation
 
 Nook can evaluate its NixOS guests from standalone Home Manager on an Arch host.
-This prototype needs systemd, `systemd-nspawn`, Polkit with an authentication
-agent, a multi-user Nix installation, and a kernel/filesystem that support
-ID-mapped mounts. Enable the Arch host installer in the standalone Home Manager
-configuration:
+This integration has been tested with a terminal-only guest in an Arch KVM VM.
 
-```nix
-outputs = { nixpkgs, home-manager, nook, ... }: {
-  homeConfigurations.alice = home-manager.lib.homeManagerConfiguration {
-    pkgs = import nixpkgs { system = "x86_64-linux"; };
-    modules = [
-      nook.homeManagerModules.default
-      {
-        home.username = "alice";
-        home.homeDirectory = "/home/alice";
-        home.stateVersion = "26.05";
-        programs.nook = {
-          enable = true;
-          hostIntegration.enable = true;
-          host.timeZone = "Europe/Berlin";
-          sandboxes.dev = {
-            nix = true;
-            gpu = false; # First verify a terminal-only guest.
-          };
-        };
-      }
-    ];
-  };
-};
+### 1. Prepare the host
+
+Install Arch's [Nix](https://archlinux.org/packages/extra/x86_64/nix/) and
+[Polkit](https://archlinux.org/packages/extra/x86_64/polkit/) packages, then
+start the multi-user Nix daemon:
+
+```sh
+sudo pacman -Syu --needed nix polkit
+sudo systemctl enable --now nix-daemon.socket
 ```
 
-Run `home-manager switch --flake .#alice`. Home Manager prints the immutable
-profile catalog and requested host access, then invokes `pkexec` if the host
+Arch's [systemd package](https://archlinux.org/packages/core/x86_64/systemd/files/)
+already includes `systemd-nspawn` and `systemd-machined.socket`; Nook starts the
+socket when needed. Open a new login shell so Arch's Nix profile script is
+loaded. Add `experimental-features = nix-command flakes` to
+`~/.config/nix/nix.conf` (or the system Nix configuration), preserving any
+existing settings. Check `nix store ping` and `command -v systemd-nspawn`.
+
+The kernel and filesystem backing the sandbox homes must support ID-mapped
+mounts. By default, `findmnt -no FSTYPE -T "$HOME"` shows that filesystem;
+if you set `xdg.stateHome` or a profile's `stateDirectory`, check the
+filesystem at that path instead. See the
+[mount_setattr documentation](https://man.archlinux.org/man/mount_setattr.2.en)
+for supported filesystems and kernel versions. A graphical session also needs
+a [Polkit authentication agent](https://wiki.archlinux.org/title/Polkit) for
+the first privileged install. GNOME and KDE normally run one; on another
+desktop, for example install `polkit-gnome` with
+`sudo pacman -S --needed polkit-gnome` and add
+`/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1` to your session
+startup. The account must be allowed to authenticate administrative actions.
+
+### 2. Add Nook to Home Manager
+
+If Home Manager is not installed yet, follow its
+[standalone setup](https://nix-community.github.io/home-manager/nix-flakes/standalone.html):
+`nix run home-manager/master -- init --switch` creates
+`~/.config/home-manager/flake.nix` and `home.nix`. Replace the generated
+`flake.nix` with this complete example, retaining your settings in `home.nix`:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nook = {
+      url = "github:ambiso/nook";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.home-manager.follows = "home-manager";
+    };
+  };
+
+  outputs = { nixpkgs, home-manager, nook, ... }: {
+    homeConfigurations.alice = home-manager.lib.homeManagerConfiguration {
+      pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      modules = [
+        ./home.nix
+        nook.homeManagerModules.default
+        {
+          programs.nook = {
+            enable = true;
+            hostIntegration.enable = true;
+            host.timeZone = "Europe/Berlin";
+            sandboxes.dev = {
+              nix = true;
+              gpu = false;
+              audio = false;
+              network = false;
+              inheritAppearance = false;
+              hostSessionBus = false;
+              portals = false;
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Replace `alice`, the system architecture, and timezone for your host. Confirm
+that the generated `home.nix` has your actual `home.username`,
+`home.homeDirectory`, and `home.stateVersion`.
+
+### 3. Activate and launch
+
+Run `home-manager switch --flake ~/.config/home-manager#alice`. The first switch
+builds a NixOS guest closure, so allow time and disk space. Home Manager prints
+the immutable profile catalog and a summary of permissions, mounts, and
+forwarded access, then invokes `pkexec` if the host
 configuration changed. The authenticated installer writes per-profile systemd
 templates, the profile registry, and narrow Polkit rules, then reloads systemd.
 An unchanged catalog needs no prompt. `nix build .#arch-host` also exposes the
-installer as a separate Nix package for inspection or manual use. Launch with
-`nk launch dev` after activation.
+installer as a separate Nix package for inspection or manual use from Nook's
+source checkout. Launch with `nk launch dev` after activation. Enable audio,
+networking, appearance inheritance, and other access individually once the
+terminal profile works.
 
-To remove every installed host profile, keep `hostIntegration.enable = true`,
-set `programs.nook.enable = false`, and run one more Home Manager switch. After
-that, the host integration option can be removed.
+To remove every installed host profile, first stop its running instances. Keep
+`hostIntegration.enable = true`, set `programs.nook.enable = false`, and run one
+more Home Manager switch. The installer refuses to remove an active profile.
+It leaves instance homes and other sandbox state untouched. After that, the host
+integration option can be removed. The installer also checks files left by the
+original Arch prototype against that version's immutable catalog before
+removing them.
+
+If a switch is interrupted, retry the same Home Manager generation first. If
+you have already moved to a newer generation, the installer prints the pending
+catalog path. Run the new generation's `nook-host-install install USER CATALOG`
+with administrative authentication using that path, then retry your Home Manager
+switch. Keep the pending catalog available in the Nix store until recovery is
+complete.
 
 The deployment source is trusted input: a sandbox or host process that can edit
 it can plant a change before you authorize the switch. Keep the flake and any
@@ -359,7 +434,9 @@ review changes but cannot make user-writable inputs trustworthy. The Arch
 installer does not yet reload running guests when a compatible profile changes;
 stop and relaunch them to apply a new generation. GPU integration, especially
 proprietary drivers, needs separate testing; wrapping `nk` with nixGL does not
-configure the guest's driver stack.
+configure the guest's driver stack. See Home Manager's
+[non-NixOS GPU guide](https://nix-community.github.io/home-manager/usage/gpu-non-nixos.html)
+for the host side; nixGL is optional.
 
 ## Use
 

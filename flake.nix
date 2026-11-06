@@ -59,10 +59,16 @@
           pkgs = pkgsFor system;
           inherit home-manager;
         };
-        arch-host-empty-profile = import ./tests/arch-host-profile.nix {
+        arch-host-activation = import ./tests/arch-host-profile.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+          output = "activation";
+        };
+        arch-host-empty-activation = import ./tests/arch-host-profile.nix {
           pkgs = pkgsFor system;
           inherit home-manager;
           enabled = false;
+          output = "activation";
         };
         integration = import ./tests/sandbox-systemd.nix {
           pkgs = pkgsFor system;
