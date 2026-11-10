@@ -760,7 +760,11 @@ let
         + lib.concatMapStrings (pattern: "device-pattern\t${pattern}\t${pattern}\n") cfg.devicePatterns
       );
       profile = pkgs.runCommand "sandbox-profile-${name}" { } ''
-        mkdir -p "$out/root/etc" "$out/root/usr/lib" "$out/root/tmp" "$out/root/var"
+        mkdir -p "$out/root/etc" "$out/root/usr" "$out/root/tmp" "$out/root/var"
+        # nspawn refuses to boot a tree without /usr. Keep it empty: before boot,
+        # nspawn links /lib, /bin, /sbin and /lib64 to each usr/ subdirectory it
+        # finds, and a NixOS guest wants none of them (activation creates its own
+        # /bin/sh and /usr/bin/env).
         echo 'ID=nixos' > "$out/root/etc/os-release"
         # An initialized image with an empty ID gets an instance-specific ID
         # without rerunning first-boot presets. NixOS supplies the unit links.
