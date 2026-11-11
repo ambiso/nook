@@ -12,6 +12,52 @@ machine.wait_until_succeeds("test -S /run/user/1000/pipewire-0")
 machine.wait_until_succeeds("test -S /run/user/1000/pulse/native")
 
 
+with subtest("NixOS and standalone host units share the supervisor contract"):
+    # The standalone installer can render its unit into an offline root. This
+    # compares both real generators without changing the VM's active units.
+    machine.succeed(
+        f"{HOST_INSTALLER} install alice {HOST_CATALOG} --root /tmp/nook-host-unit-check"
+    )
+
+    def unit_settings(path):
+        settings = {}
+        section = None
+        for line in machine.succeed(f"cat {path}").splitlines():
+            if line.startswith("["):
+                section = line.strip("[]")
+            elif "=" in line and not line.startswith("#"):
+                key, value = line.split("=", 1)
+                settings[(section, key)] = value
+        return settings
+
+    nixos = unit_settings("/etc/systemd/system/sandbox-ualice-check@.service")
+    standalone = unit_settings(
+        "/tmp/nook-host-unit-check/etc/systemd/system/sandbox-ualice-check@.service"
+    )
+    shared = [
+        ("Unit", "Wants"),
+        ("Unit", "After"),
+        *[("Service", name) for name in (
+            "Type", "NotifyAccess", "RuntimeDirectory", "RuntimeDirectoryMode",
+            "StateDirectory", "PrivateMounts", "Delegate", "DelegateSubgroup",
+            "KillMode", "TimeoutStartSec", "TimeoutStopSec", "Restart",
+            "LimitCORE", "LimitMEMLOCK",
+        )],
+    ]
+    for key in shared:
+        left, right = nixos[key], standalone[key]
+        if key[1] in ("PrivateMounts", "Delegate"):
+            left = {"true": "yes", "false": "no"}.get(left.lower(), left.lower())
+            right = {"true": "yes", "false": "no"}.get(right.lower(), right.lower())
+        assert left == right, (key, left, right)
+    for verb, setting in (("serve", "ExecStart"), ("reload", "ExecReload")):
+        nixos_executable, nixos_args = nixos[("Service", setting)].split(" ", 1)
+        standalone_executable, standalone_args = standalone[("Service", setting)].split(" ", 1)
+        assert nixos_executable == standalone_executable
+        assert nixos_args == standalone_args
+        assert nixos_args.startswith(verb + " ") and nixos_args.endswith(" %i")
+
+
 def as_owner(command):
     return "su - alice -c " + shlex.quote("set -e; " + command)
 

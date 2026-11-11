@@ -629,6 +629,8 @@ pkgs.testers.runNixOSTest {
     + pkgs.lib.optionalString (!benchmark && !diagnostics) ''
       BASE_SYSTEM = "${nodes.machine.system.build.toplevel}"
       UPDATED_SYSTEM = "${nodes.machine.specialisation.updated.configuration.system.build.toplevel}"
+      HOST_INSTALLER = "${nodes.machine.home-manager.users.alice.programs.nook.package}/bin/nook-host-install"
+      HOST_CATALOG = "${nodes.machine.home-manager.users.alice.programs.nook.profiles}"
     ''
     + builtins.readFile (
       if diagnostics then
