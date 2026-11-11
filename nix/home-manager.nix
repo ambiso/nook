@@ -1020,8 +1020,7 @@ let
             "org.freedesktop.DBus" = "talk";
             "eu.ambiso.sandbox.${name}" = "own";
             "eu.ambiso.sandbox.${name}.*" = "own";
-          }
-          // lib.optionalAttrs cfg.portals { "org.freedesktop.portal.*" = "talk"; };
+          };
         };
         systemBusPolicies = lib.mkOption {
           type = types.attrsOf (
