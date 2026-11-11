@@ -657,7 +657,9 @@ The broker strips trusted-user authority even when the owner is trusted by the
 host daemon. Home Manager activation does not need that connection:
 `homeManagerModules` alone leave the daemon unreachable, and Nix inside such a
 guest can evaluate but not use a store. `podman = true` enables rootless Podman
-inside the instance.
+inside the instance. Nook remounts `/proc` by default so nested Podman and
+bubblewrap runtimes can mount procfs. Set `remountProcfs = false` in a profile
+that does not need them; this keeps nspawn's masked procfs view.
 
 Networking uses a separate namespace and pasta. Guest loopback is independent
 of host loopback, and automatic port forwarding is disabled in both directions.

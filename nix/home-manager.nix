@@ -615,6 +615,7 @@ let
               podman
               portals
               inheritAppearance
+              remountProcfs
               nixBuildLogs
               dnsSearch
               devicePatterns
@@ -861,6 +862,16 @@ let
           type = types.bool;
           default = false;
           description = "Run sandbox-local Xwayland over the forwarded Wayland connection.";
+        };
+        remountProcfs = lib.mkOption {
+          type = types.bool;
+          default = true;
+          description = ''
+            Mount a fresh procfs over nspawn's masked /proc so nested Podman
+            and bubblewrap workloads can mount procfs. This exposes procfs
+            entries that nspawn masks by default. Disable it for profiles
+            that do not need nested container or FHS runtimes.
+          '';
         };
         gpu = lib.mkOption {
           type = types.bool;

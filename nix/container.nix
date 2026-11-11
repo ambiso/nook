@@ -16,6 +16,7 @@
   podman,
   portals,
   inheritAppearance,
+  remountProcfs,
   nixBuildLogs,
   nixEnabled,
   dnsSearch,
@@ -188,12 +189,12 @@ in
     description = "Start the sandbox user's systemd manager";
     requires = [
       "systemd-logind.service"
-      "sandbox-procfs.service"
-    ];
+    ]
+    ++ lib.optional remountProcfs "sandbox-procfs.service";
     after = [
       "systemd-logind.service"
-      "sandbox-procfs.service"
-    ];
+    ]
+    ++ lib.optional remountProcfs "sandbox-procfs.service";
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -310,7 +311,7 @@ in
   nix.channel.enable = false;
   systemd.services.nix-daemon.enable = false;
   systemd.sockets.nix-daemon.enable = false;
-  systemd.services.sandbox-procfs = {
+  systemd.services.sandbox-procfs = lib.mkIf remountProcfs {
     description = "Prepare procfs for nested application sandboxes";
     wantedBy = [ "multi-user.target" ];
     before = [
@@ -333,13 +334,13 @@ in
     wantedBy = [ "multi-user.target" ];
     requires = [
       (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
-      "sandbox-procfs.service"
     ]
+    ++ lib.optional remountProcfs "sandbox-procfs.service"
     ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
     after = [
       (if uid == null then "sandbox-user-manager.service" else "user@${toString uid}.service")
-      "sandbox-procfs.service"
     ]
+    ++ lib.optional remountProcfs "sandbox-procfs.service"
     ++ lib.optional (homeManagerServiceName != "") homeManagerServiceName;
     environment = {
       HOME = home;

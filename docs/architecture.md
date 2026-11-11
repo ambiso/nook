@@ -149,11 +149,12 @@ and native mapping helpers within this private namespace.
 
 Instances share the host kernel. Nspawn supplies namespace, capability and
 system-call isolation, but Nook does not turn it into a virtual-machine security
-boundary. To support nested application sandboxes, Nook also replaces nspawn's
-locked procfs view with a procfs mounted inside the guest namespaces. Nook sets no per-instance
-CPU, memory, I/O or process ceilings, so a hostile workload can exhaust host
-resources. Apply host systemd limits when those properties are part of the threat
-model.
+boundary. By default, Nook replaces nspawn's masked procfs view with a fresh
+procfs inside the guest namespaces so nested Podman and bubblewrap runtimes
+can mount procfs. `remountProcfs = false` keeps nspawn's view in profiles that
+do not need those runtimes. Nook sets no per-instance CPU, memory, I/O or
+process ceilings, so a hostile workload can exhaust host resources. Apply
+host systemd limits when those properties are part of the threat model.
 
 The Nix store is shared read-only. Mutable homes, build output, caches, and
 rootless Podman storage are separate. `bindMounts` adds deliberate exceptions:

@@ -61,6 +61,9 @@ let
       nixBuildLogs = false;
     };
   };
+  noProcRemount = evaluate {
+    home-manager.users.alice.programs.nook.sandboxes.dev.remountProcfs = false;
+  };
   removedOverride = evaluate {
     home-manager.users.alice.programs.nook.host.uid = lib.mkForce 1002;
   };
@@ -173,6 +176,18 @@ assert lib.elem "NIX_PATH"
   nixDefaults.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
 assert nixDefaults.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
 assert !nixLogsDisabled.home-manager.users.alice.programs.nook.sandboxes.dev.nixBuildLogs;
+assert guest.sandboxes.dev._container.systemd.services ? sandbox-procfs;
+assert
+  !(
+    noProcRemount.home-manager.users.alice.programs.nook.sandboxes.dev._container.systemd.services
+      ? sandbox-procfs
+  );
+assert
+  !(lib.elem "sandbox-procfs.service" noProcRemount.home-manager.users.alice.programs.nook.sandboxes.dev._container.systemd.services.sandbox-ready.requires);
+assert
+  !(lib.elem "sandbox-procfs.service" noProcRemount.home-manager.users.alice.programs.nook.sandboxes.dev._container.systemd.services.sandbox-user-manager.requires);
+assert
+  !(lib.elem "sandbox-procfs.service" noProcRemount.home-manager.users.alice.programs.nook.sandboxes.dev._container.systemd.services.sandbox-user-manager.after);
 assert lib.elem "CUSTOM_HINT"
   explicit.home-manager.users.alice.programs.nook.sandboxes.dev.hostEnvironment;
 assert

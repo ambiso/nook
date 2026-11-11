@@ -444,7 +444,7 @@ try:
     )
     cli("stop no-portals")
     cli(
-        "launch no-appearance -- bash -ec 'test ! -e /run/host/appearance-bus; ! systemctl --user is-active --quiet sandbox-appearance.service; ! busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings ReadOne ss org.freedesktop.appearance color-scheme'"
+        "launch no-appearance -- bash -ec 'test ! -e /run/host/appearance-bus; ! systemctl --user is-active --quiet sandbox-appearance.service; ! systemctl --system is-active --quiet sandbox-procfs.service; ! busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings ReadOne ss org.freedesktop.appearance color-scheme'"
     )
     cli("stop no-appearance")
     assert "activated" in inside("cat ~/activation-check")

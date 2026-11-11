@@ -583,6 +583,7 @@ pkgs.testers.runNixOSTest {
       programs.nook.sandboxes.no-appearance = {
         hostSessionBus = false;
         inheritAppearance = false;
+        remountProcfs = false;
         network = false;
         audio = false;
       };
