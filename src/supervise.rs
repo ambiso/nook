@@ -1009,7 +1009,14 @@ fn clone_devices(profile: &Profile, source: &Path, destination: &Path, depth: us
 
 fn remove_device_clone(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)?,
+        Ok(metadata) if metadata.is_dir() => {
+            // A guest may retain a nested node through an open descriptor or
+            // bind mount. Revoke each inode before removing its directory.
+            for entry in fs::read_dir(path)? {
+                remove_device_clone(&entry?.path())?;
+            }
+            fs::remove_dir(path)?;
+        }
         Ok(metadata) => {
             if metadata.file_type().is_char_device() {
                 fs::set_permissions(path, fs::Permissions::from_mode(0o000))?;
@@ -1030,32 +1037,48 @@ struct DeviceSource {
 }
 
 impl DeviceSource {
+    fn revoke(&self) -> Result<()> {
+        if fs::symlink_metadata(&self.destination)?
+            .file_type()
+            .is_char_device()
+        {
+            // The node's inode can still be bind-mounted in the guest. Remove
+            // its access before unlinking the staged path.
+            fs::set_permissions(&self.destination, fs::Permissions::from_mode(0o000))?;
+            own(&self.destination, 0, 0)?;
+        } else {
+            // Keep the mounted directory itself so hotplug can recover.
+            for entry in fs::read_dir(&self.destination)? {
+                remove_device_clone(&entry?.path())?;
+            }
+        }
+        Ok(())
+    }
+
     fn refresh(&self, profile: &Profile) -> Result<()> {
         if !self.pattern {
             if clone_devices(profile, &self.source, &self.destination, 0).is_err() {
-                if fs::symlink_metadata(&self.destination)
-                    .is_ok_and(|metadata| metadata.file_type().is_char_device())
-                {
-                    fs::set_permissions(&self.destination, fs::Permissions::from_mode(0o000))?;
-                    own(&self.destination, 0, 0)?;
-                } else if self.destination.is_dir() {
-                    // Keep the directory inode mounted in the guest. An
-                    // unplugged bus may disappear and return later.
-                    for entry in fs::read_dir(&self.destination)? {
-                        remove_device_clone(&entry?.path())?;
-                    }
-                } else {
-                    remove_device_clone(&self.destination)?;
-                }
+                self.revoke()?;
             }
             return Ok(());
         }
-        fs::create_dir_all(&self.destination)?;
+        // This directory was staged and mounted before the guest started.
+        // Recreating it here would hide an unexpected loss of that mount.
+        fs::read_dir(&self.destination)?;
         let pattern = self.source.to_str().ok_or("invalid device pattern")?;
         let mut permitted = std::collections::HashSet::new();
         for source in glob::glob(pattern)? {
-            let source = source?;
-            if !fs::symlink_metadata(&source)?.file_type().is_char_device() {
+            let source = match source {
+                Ok(source) => source,
+                Err(error) if error.error().kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let metadata = match fs::symlink_metadata(&source) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if !metadata.file_type().is_char_device() {
                 continue;
             }
             let name = source.file_name().ok_or("device has no filename")?;
@@ -1591,6 +1614,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
                 destination: stage.join(format!("device-patterns-{i}")),
                 pattern: true,
             };
+            fs::create_dir_all(&selection.destination)?;
             selection.refresh(profile)?;
             let clone = Mount {
                 mode: "device".into(),
@@ -1705,6 +1729,7 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     let mut stopping_since = None;
     let mut forced_shutdown = false;
     let mut refresh = Instant::now();
+    let mut device_refresh_failed = vec![false; devices.len()];
     loop {
         if let Some(status) = child.try_wait()? {
             // A stop request may end with nspawn being killed by the forced
@@ -1782,8 +1807,33 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
             }
         }
         if refresh.elapsed() > Duration::from_secs(1) {
-            for source in &devices {
-                let _ = source.refresh(profile);
+            for (source, failed) in devices.iter().zip(&mut device_refresh_failed) {
+                match source.refresh(profile) {
+                    Ok(()) if *failed => {
+                        eprintln!("Device refresh recovered for {}", source.source.display());
+                        *failed = false;
+                    }
+                    Ok(()) => (),
+                    Err(error) => {
+                        // A failed scan may have left previously forwarded
+                        // nodes accessible. Revoke them all before retrying.
+                        if let Err(revoke_error) = source.revoke() {
+                            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+                            return Err(format!(
+                                "cannot refresh or revoke device {}: {error}; {revoke_error}",
+                                source.source.display()
+                            )
+                            .into());
+                        }
+                        if !*failed {
+                            eprintln!(
+                                "Device refresh failed for {}: {error}; forwarded devices revoked",
+                                source.source.display()
+                            );
+                            *failed = true;
+                        }
+                    }
+                }
             }
             refresh = Instant::now();
         }
