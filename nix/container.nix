@@ -307,7 +307,6 @@ in
     "nix-command"
     "flakes"
   ];
-  nix.settings.sandbox = false;
   nix.channel.enable = false;
   systemd.services.nix-daemon.enable = false;
   systemd.sockets.nix-daemon.enable = false;
