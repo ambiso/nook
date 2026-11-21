@@ -34,6 +34,22 @@ pub fn running_indicator(running: bool) -> Span<'static> {
     }
 }
 
+fn matching_indices(entries: &[Choice], profiles: &[Profile], query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..entries.len()).collect();
+    }
+    let query = query.to_lowercase();
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, choice)| {
+            let name = profiles[choice.profile].values["name"].to_lowercase();
+            let label = format!("{} {}", name, choice.instance.to_lowercase());
+            label.contains(&query).then_some(index)
+        })
+        .collect()
+}
+
 impl NamePrompt {
     fn submit(&self, entries: &[Choice]) -> std::result::Result<Choice, String> {
         let name = parse_name(&self.name)?;
@@ -67,17 +83,23 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
         let mut prompt: Option<NamePrompt> = None;
         let mut deletion: Option<DeletePrompt> = None;
         let mut status: Option<String> = None;
+        let mut query = String::new();
+        let mut search_draft: Option<String> = None;
         loop {
             if entries.is_empty() {
                 return Err("no sandbox profiles are configured".into());
             }
-            let selected = selection.selected().unwrap_or(0).min(entries.len() - 1);
-            selection.select(Some(selected));
+            let active_query = search_draft.as_deref().unwrap_or(&query);
+            let visible = matching_indices(&entries, profiles, active_query);
+            let selected = (!visible.is_empty())
+                .then(|| selection.selected().unwrap_or(0).min(visible.len() - 1));
+            selection.select(selected);
             terminal.draw(|frame| {
                 let [list_area, help_area] =
-                    Layout::vertical([Constraint::Min(3), Constraint::Length(2)])
+                    Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
                         .areas(frame.area());
-                let rows = entries.iter().map(|choice| {
+                let rows = visible.iter().map(|&index| {
+                    let choice = &entries[index];
                     let text = format!(
                         "{:<24} {:<22} {}",
                         profiles[choice.profile].values["name"],
@@ -90,15 +112,28 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     ]))
                 });
                 let list = List::new(rows)
-                    .block(Block::bordered().title(" Nook "))
+                    .block(Block::bordered().title(format!(
+                        " Nook ({}/{}) ",
+                        visible.len(),
+                        entries.len()
+                    )))
                     .highlight_symbol("› ")
                     .highlight_style(Style::new().fg(Color::Cyan));
                 frame.render_stateful_widget(list, list_area, &mut selection);
+                let search_line = if search_draft.is_some() {
+                    format!("/{active_query}_   Enter: apply   Esc: cancel   Ctrl+U: clear")
+                } else if query.is_empty() {
+                    "/: search by profile or instance".into()
+                } else {
+                    format!("/{query}   /: edit   Esc: clear")
+                };
+                let help = status.as_deref().unwrap_or(if visible.is_empty() {
+                    "No matching instances"
+                } else {
+                    "↑/↓ j/k: select   Enter: launch/enter   n: named   e: ephemeral   s: stop   d: delete   q: quit"
+                });
                 frame.render_widget(
-                    Paragraph::new(status.as_deref().unwrap_or(
-                        "↑/↓ j/k: select   Enter: launch/enter   n: named   e: ephemeral   s: stop   d: delete   q: quit",
-                    ))
-                    .wrap(Wrap { trim: false }),
+                    Paragraph::new(format!("{search_line}\n{help}")).wrap(Wrap { trim: false }),
                     help_area,
                 );
                 if let Some(prompt) = &prompt {
@@ -209,61 +244,110 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     }
                     continue;
                 }
+                if let Some(draft) = &mut search_draft {
+                    match key.code {
+                        KeyCode::Esc => search_draft = None,
+                        KeyCode::Enter => {
+                            query = std::mem::take(draft);
+                            search_draft = None;
+                        }
+                        KeyCode::Backspace => {
+                            draft.pop();
+                            selection.select(Some(0));
+                        }
+                        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            draft.clear();
+                            selection.select(Some(0));
+                        }
+                        KeyCode::Char(character)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                        {
+                            draft.push(character);
+                            selection.select(Some(0));
+                        }
+                        _ => (),
+                    }
+                    continue;
+                }
                 status = None;
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                    KeyCode::Char('q') => return Ok(None),
+                    KeyCode::Esc if !query.is_empty() => {
+                        query.clear();
+                        selection.select(Some(0));
+                    }
+                    KeyCode::Esc => return Ok(None),
+                    KeyCode::Char('/') => search_draft = Some(query.clone()),
                     KeyCode::Down | KeyCode::Char('j') => {
-                        selection.select(Some((selected + 1) % entries.len()))
+                        if let Some(selected) = selected {
+                            selection.select(Some((selected + 1) % visible.len()));
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        selection.select(Some((selected + entries.len() - 1) % entries.len()))
+                        if let Some(selected) = selected {
+                            selection.select(Some((selected + visible.len() - 1) % visible.len()));
+                        }
                     }
-                    KeyCode::Enter => return Ok(Some(entries[selected].clone())),
+                    KeyCode::Enter => {
+                        if let Some(selected) = selected {
+                            return Ok(Some(entries[visible[selected]].clone()));
+                        }
+                    }
                     KeyCode::Char('n') => {
-                        prompt = Some(NamePrompt {
-                            // The selected profile is the template, even when
-                            // the cursor is on one of its existing instances.
-                            profile: entries[selected].profile,
-                            name: String::new(),
-                            error: None,
-                        });
+                        if let Some(selected) = selected {
+                            prompt = Some(NamePrompt {
+                                // The selected profile is the template, even when
+                                // the cursor is on one of its existing instances.
+                                profile: entries[visible[selected]].profile,
+                                name: String::new(),
+                                error: None,
+                            });
+                        }
                     }
                     KeyCode::Char('e') => {
-                        return Ok(Some(Choice {
-                            profile: entries[selected].profile,
-                            instance: new_ephemeral_id()?,
-                            running: false,
-                        }));
+                        if let Some(selected) = selected {
+                            return Ok(Some(Choice {
+                                profile: entries[visible[selected]].profile,
+                                instance: new_ephemeral_id()?,
+                                running: false,
+                            }));
+                        }
                     }
                     KeyCode::Char('s') => {
-                        let choice = &entries[selected];
-                        let profile = &profiles[choice.profile];
-                        if !request_stop(profile, &choice.instance)?.success() {
+                        if let Some(selected) = selected {
+                            let choice = &entries[visible[selected]];
+                            let profile = &profiles[choice.profile];
+                            if !request_stop(profile, &choice.instance)?.success() {
+                                status = Some(format!(
+                                    "Failed to request stop for {}/{}",
+                                    profile.get("name")?,
+                                    choice.instance
+                                ));
+                                continue;
+                            }
                             status = Some(format!(
-                                "Failed to request stop for {}/{}",
+                                "Stopping {}/{}…",
                                 profile.get("name")?,
                                 choice.instance
                             ));
-                            continue;
+                            entries = choices(profiles)?;
                         }
-                        status = Some(format!(
-                            "Stopping {}/{}…",
-                            profile.get("name")?,
-                            choice.instance
-                        ));
-                        entries = choices(profiles)?;
                     }
                     KeyCode::Char('d') => {
-                        let choice = entries[selected].clone();
-                        match prepare_deletion(&profiles[choice.profile], &choice.instance) {
-                            Ok(saved) => {
-                                deletion = Some(DeletePrompt {
-                                    choice,
-                                    saved,
-                                    error: None,
-                                })
+                        if let Some(selected) = selected {
+                            let choice = entries[visible[selected]].clone();
+                            match prepare_deletion(&profiles[choice.profile], &choice.instance) {
+                                Ok(saved) => {
+                                    deletion = Some(DeletePrompt {
+                                        choice,
+                                        saved,
+                                        error: None,
+                                    })
+                                }
+                                Err(error) => status = Some(error.to_string()),
                             }
-                            Err(error) => status = Some(error.to_string()),
                         }
                     }
                     _ => (),
@@ -284,6 +368,42 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_indices_still_point_to_the_original_choices() {
+        let profile = |name: &str| Profile {
+            dir: Default::default(),
+            values: [("name".into(), name.into())].into(),
+            mounts: vec![],
+            host_environment: vec![],
+            session_rules: vec![],
+            system_rules: vec![],
+            pasta: vec![],
+        };
+        let profiles = [profile("dev"), profile("Steam")];
+        let entries = [
+            Choice {
+                profile: 0,
+                instance: "main".into(),
+                running: true,
+            },
+            Choice {
+                profile: 1,
+                instance: "main".into(),
+                running: false,
+            },
+            Choice {
+                profile: 0,
+                instance: "n-project".into(),
+                running: false,
+            },
+        ];
+
+        assert_eq!(matching_indices(&entries, &profiles, "STEAM"), [1]);
+        assert_eq!(matching_indices(&entries, &profiles, "project"), [2]);
+        assert_eq!(matching_indices(&entries, &profiles, "dev n-pro"), [2]);
+        assert!(matching_indices(&entries, &profiles, "missing").is_empty());
+    }
 
     #[test]
     fn named_instance_uses_the_selected_template_and_checks_duplicates() {

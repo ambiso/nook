@@ -473,6 +473,8 @@ selected instance is stopped. This flag also works with `shell`;
 it cannot be combined with `--ephemeral`, which always creates a new instance.
 
 In the selector, use arrows or **j/k** to select a row, **Enter** to launch/enter,
+**/** to search profile and instance names (type to filter, **Enter** to keep the
+filter, **Esc** to cancel or clear it),
 **n** to create a named instance from that profile, **e** for an ephemeral
 instance, **s** to stop, **d** to delete a stopped named instance after confirmation,
 and **q** to quit. Running instances have a green **●** to their left. Named
