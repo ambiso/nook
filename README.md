@@ -462,8 +462,10 @@ nk delete dev --name my-project        # confirm permanent removal of saved data
 tab-separated output when redirected. JSON is pretty-printed and colored on a
 terminal, while redirected `--format=json` output is compact JSON without ANSI
 escapes. Set `NO_COLOR` to disable color without disabling terminal formatting.
-Each JSON entry includes `uptime_seconds`, `cpu_percent`, `ram_bytes`, and
-`swap_bytes`. Unavailable readings are `null`. CPU is sampled over a short
+Each JSON entry includes `uptime_seconds`, `cpu_percent`, `ram_bytes`,
+`memory_current_bytes`, and `swap_bytes`. `ram_bytes` is the same estimate the
+TUI shows. `memory_current_bytes` is the full cgroup memory charge, including
+file cache. Unavailable readings are `null`. CPU is sampled over a short
 interval, with 100% representing one fully used core.
 
 If Home Manager refuses to replace an existing file, the activation fails and
@@ -491,11 +493,13 @@ Each profile row represents its main instance. Named and ephemeral instances
 appear beneath it. When a search matches only a child, its profile stays visible
 for context and the cursor moves among the matches.
 
-On wider terminals the selector shows RAM, Swap, Uptime, and CPU. RAM counts
-resident anonymous and shared memory, including tmpfs, and excludes ordinary
-file cache. Swap is the amount charged to the sandbox by the kernel. Uptime
-starts when systemd marks the sandbox ready. CPU is averaged between refreshes,
-with 100% representing one fully used core. A dash means no reading is available.
+On wider terminals the selector shows RAM, Swap, Uptime, and CPU. RAM estimates
+the working set as `memory.current - inactive_file`, like `docker stats` on
+cgroup v2. It shows the full charge when the inactive file count is unavailable
+or is at least the current charge. Swap is the amount charged to the sandbox
+by the kernel. Uptime starts when systemd marks the sandbox ready. CPU is
+averaged between refreshes, with 100% representing one fully used core. A dash
+means no reading is available.
 
 New instances reuse their profile's configuration and permissions, starting
 with a clean home. They do not copy projects, credentials, or caches from the

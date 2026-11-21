@@ -916,6 +916,7 @@ mod tests {
                     uptime_seconds: Some(3600),
                     cpu_percent: Some(12.5),
                     ram_bytes: Some(1_048_576),
+                    memory_current_bytes: Some(2_097_152),
                     swap_bytes: Some(0),
                 },
             },
@@ -951,6 +952,8 @@ mod tests {
         assert_eq!(decoded[0]["uptime_seconds"], 3600);
         assert_eq!(decoded[0]["cpu_percent"], 12.5);
         assert_eq!(decoded[0]["ram_bytes"], 1_048_576);
+        assert_eq!(decoded[0]["memory_current_bytes"], 2_097_152);
+        assert!(decoded[1].get("memory_current_bytes").unwrap().is_null());
         assert_eq!(decoded[0]["swap_bytes"], 0);
         assert!(decoded[1].get("cpu_percent").unwrap().is_null());
 

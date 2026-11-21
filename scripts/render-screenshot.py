@@ -81,7 +81,9 @@ def prepare_demo(root, nk):
     for profile, instance, _uptime, _cpu, ram, _swap in RUNNING:
         group = root / "cgroup" / unit(profile, instance)
         group.mkdir(parents=True)
-        (group / "memory.stat").write_text(f"anon {ram * MIB}\nshmem 0\n")
+        inactive_file = 256 * MIB
+        (group / "memory.current").write_text(f"{ram * MIB + inactive_file}\n")
+        (group / "memory.stat").write_text(f"inactive_file {inactive_file}\n")
 
     # The installed wrapper puts real systemctl first. Give the actual Nook
     # binary a private PATH and cgroup tree containing only the demo data.

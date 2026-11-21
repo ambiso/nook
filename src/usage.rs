@@ -14,6 +14,7 @@ pub(crate) struct Usage {
     pub uptime_seconds: Option<u64>,
     pub cpu_percent: Option<f64>,
     pub ram_bytes: Option<u64>,
+    pub memory_current_bytes: Option<u64>,
     pub swap_bytes: Option<u64>,
 }
 
@@ -119,9 +120,13 @@ impl UsageMonitor {
                     .filter(|&started| started != 0)
                     .and_then(|started| since_boot.checked_sub(Duration::from_micros(started)))
                     .map(|uptime| uptime.as_secs());
-                usage.ram_bytes = properties
+                if let Some((current, working_set)) = properties
                     .get("ControlGroup")
-                    .and_then(|path| read_resident_ram(path));
+                    .and_then(|path| read_memory_usage(path))
+                {
+                    usage.memory_current_bytes = Some(current);
+                    usage.ram_bytes = Some(working_set);
+                }
                 usage.swap_bytes = counter("MemorySwapCurrent");
                 if let (Some(&invocation), Some(cpu_ns)) =
                     (properties.get("InvocationID"), counter("CPUUsageNSec"))
@@ -143,7 +148,7 @@ impl UsageMonitor {
     }
 }
 
-fn read_resident_ram(cgroup: &str) -> Option<u64> {
+fn read_memory_usage(cgroup: &str) -> Option<(u64, u64)> {
     let path = Path::new(cgroup.strip_prefix('/')?);
     if path.as_os_str().is_empty()
         || !path
@@ -152,21 +157,24 @@ fn read_resident_ram(cgroup: &str) -> Option<u64> {
     {
         return None;
     }
-    let stat =
-        fs::read_to_string(Path::new("/sys/fs/cgroup").join(path).join("memory.stat")).ok()?;
-    resident_ram(&stat)
+    let path = Path::new("/sys/fs/cgroup").join(path);
+    let current = fs::read_to_string(path.join("memory.current"))
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    let working_set = fs::read_to_string(path.join("memory.stat"))
+        .map_or(current, |stat| memory_without_inactive_file(current, &stat));
+    Some((current, working_set))
 }
 
-fn resident_ram(stat: &str) -> Option<u64> {
-    let counter = |key| {
-        stat.lines().find_map(|line| {
-            let (name, value) = line.split_once(' ')?;
-            (name == key).then(|| value.parse::<u64>().ok()).flatten()
-        })
-    };
-    // shmem is counted under file, alongside disk cache. Include shmem itself so
-    // tmpfs and shared mappings count without including ordinary file pages.
-    counter("anon")?.checked_add(counter("shmem")?)
+fn memory_without_inactive_file(current: u64, stat: &str) -> u64 {
+    // Match docker stats on cgroup v2. The two files can change between reads,
+    // so discount inactive file pages only when their count is below the total.
+    stat.lines()
+        .find_map(|line| line.strip_prefix("inactive_file ")?.parse::<u64>().ok())
+        .filter(|&inactive| inactive < current)
+        .map_or(current, |inactive| current - inactive)
 }
 
 #[cfg(test)]
@@ -174,11 +182,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resident_ram_excludes_disk_cache_but_counts_shared_memory() {
-        let stat = "file 409600\nkernel 4096\nshmem 4096\nfile_mapped 8192\nanon 16384\n";
-        assert_eq!(resident_ram(stat), Some(20480));
-        assert_eq!(resident_ram("anon 0\nshmem 0\n"), Some(0));
-        assert_eq!(resident_ram("anon 16384\n"), None);
+    fn working_set_discounts_only_inactive_file_pages() {
+        let stat = "file 16384\nactive_file 8192\ninactive_file 4096\nunevictable 4096\n";
+        assert_eq!(memory_without_inactive_file(20_480, stat), 16_384);
+        assert_eq!(
+            memory_without_inactive_file(4096, "active_file 4096\n"),
+            4096
+        );
+        assert_eq!(
+            memory_without_inactive_file(4096, "inactive_file 4096\n"),
+            4096
+        );
+        assert_eq!(
+            memory_without_inactive_file(4096, "inactive_file 8192\n"),
+            4096
+        );
     }
 
     #[test]
