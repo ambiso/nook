@@ -100,6 +100,32 @@ pipe = subprocess.run(
 assert pipe.returncode == 37 and pipe.stdout == b"pipe output", pipe
 
 
+def boot_machine():
+    profile_root = os.readlink("/run/nook-ualice-check-main/profile-root")
+    return os.path.dirname(profile_root)
+
+
+old_machine = boot_machine()
+subprocess.run(as_alice("nk stop check"), check=True, timeout=30)
+subprocess.run(as_alice("nk launch check -- true"), check=True, timeout=30)
+new_machine = boot_machine()
+assert new_machine != old_machine, new_machine
+stale = subprocess.run(
+    as_alice(
+        "pkexec /etc/sandbox/helpers/ualice enter check main --expected-machine "
+        + shlex.quote(old_machine)
+        + " -- true"
+    ),
+    input=b"",
+    capture_output=True,
+    timeout=30,
+)
+assert stale.returncode != 0 and b"sandbox restarted before entry" in stale.stderr, stale
+assert subprocess.run(
+    ["machinectl", "show", old_machine], capture_output=True, timeout=10
+).returncode != 0
+
+
 def cli_session(master, expect):
     expect(b"x" * 32768)
     expect(b"NOOK-CLI-READY")

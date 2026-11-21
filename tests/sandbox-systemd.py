@@ -81,6 +81,12 @@ def inside(script, options=""):
     return cli("launch check " + options + command)
 
 
+def boot_machine(unit):
+    return "nook-" + machine.succeed(
+        f"systemctl show {unit} -p InvocationID --value"
+    ).strip()
+
+
 with subtest("automatically allocated host UID becomes the guest UID"):
     machine.wait_for_unit("home-manager-bob.service")
     host_uid = int(machine.succeed("id -u bob").strip())
@@ -277,8 +283,9 @@ try:
         "journalctl -b -u sandbox-ualice-check@n-collision.service --no-pager"
     )
     assert "Home Manager activation failed" in failure_log
+    collision = boot_machine("sandbox-ualice-check@n-collision.service")
     guest_log = machine.succeed(
-        "journalctl --machine=sbx-1000-check-n-collision -u home-manager-alice.service --no-pager"
+        f"journalctl --machine={collision} -u home-manager-alice.service --no-pager"
     )
     assert "would be clobbered" in guest_log
     assert "activation timed out" not in failure_log
@@ -499,14 +506,15 @@ try:
     inside("systemctl --system is-active --quiet profile-module-check.service")
     machine.succeed(as_owner("test ! -x /run/nook-ualice-check-main/image"))
     machine.succeed("install -m600 /dev/null /home/alice/shared/host-root-secret")
+    check_machine = boot_machine("sandbox-ualice-check@main.service")
     machine.succeed(
-        "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
+        f"systemd-run --machine={check_machine} --quiet --wait --pipe "
         f"--service-type=exec {COREUTILS}/bin/test ! -r /shared/host-root-secret"
     )
     # The guest user's Home Manager session variables (and PATH) stay out of
     # other accounts' login shells, notably guest root's.
     machine.succeed(
-        "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
+        f"systemd-run --machine={check_machine} --quiet --wait --pipe "
         "--service-type=exec /run/current-system/sw/bin/bash -lc "
         + shlex.quote(
             'test "$(id -u)" = 0; test -z "${NOOK_TEST_HOME_ENV:-}"; '
@@ -1116,6 +1124,7 @@ for desktop_id, query in [
     invocation = machine.succeed(
         f"systemctl show {unit} -p InvocationID --value"
     ).strip()
+    check_machine = f"nook-{invocation}"
     old_profile = machine.succeed(
         "readlink -f /run/nook-ualice-check-main/profile-root"
     ).strip()
@@ -1168,7 +1177,7 @@ for desktop_id, query in [
     cli("stop fallback")
     assert (
         machine.succeed(
-            "systemctl --machine=sbx-1000-check-main is-active --quiet "
+            f"systemctl --machine={check_machine} is-active --quiet "
             "sandbox-ready.service"
         ).strip()
         == ""
@@ -1179,7 +1188,7 @@ for desktop_id, query in [
         if line.startswith("system\t")
     )
     assert machine.succeed(
-        "systemd-run --machine=sbx-1000-check-main --quiet --wait --pipe "
+        f"systemd-run --machine={check_machine} --quiet --wait --pipe "
         "/run/current-system/sw/bin/readlink -f /run/current-system"
     ).strip() == new_system
     assert inside("printf '%s' \"$NOOK_TEST_REVISION\"").strip() == "updated"

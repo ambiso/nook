@@ -93,7 +93,6 @@ def sample(profile, markers=False):
         trace_marker.write_text(f"SANDBOX_READY {profile}\n")
 
     unit = f"sandbox-ualice-{profile}@{INSTANCE}.service"
-    machine = f"sbx-1000-{profile}-{INSTANCE}"
     host = properties(
         run(
             "systemctl",
@@ -102,8 +101,10 @@ def sample(profile, markers=False):
             "--property=CPUUsageNSec",
             "--property=TasksCurrent",
             "--property=MainPID",
+            "--property=InvocationID",
         )
     )
+    machine = f"nook-{host['InvocationID']}"
     cpu_usage = host["CPUUsageNSec"]
     result = {
         "wall_seconds": finished - started,

@@ -453,7 +453,8 @@ fn launch(
         }
         start_instance(profile, instance)?;
     }
-    let running = profile.running_profile(instance)?;
+    let boot = profile.running_instance(instance)?;
+    let running = boot.entry_profile(profile)?;
     let mut arguments = Vec::new();
     let executable =
         match entry_point {
@@ -476,6 +477,9 @@ fn launch(
         .arg("enter")
         .arg(profile.get("name")?)
         .arg(instance);
+    if let Some(machine) = boot.boot_machine() {
+        enter.arg("--expected-machine").arg(machine);
+    }
     // pkexec replaces the host working directory. Translate it while still
     // unprivileged, then carry it as data to the guest user service.
     if let Ok(directory) = env::current_dir() {

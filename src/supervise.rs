@@ -1,5 +1,7 @@
 use crate::{
-    config::{Mount, MountSource, Profile, Result, safe_mount, valid_instance},
+    config::{
+        Mount, MountSource, Profile, Result, safe_mount, valid_instance, valid_invocation_id,
+    },
     host_paths,
 };
 use std::{
@@ -10,7 +12,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink},
             net::{UnixDatagram, UnixStream},
         },
     },
@@ -1289,9 +1291,9 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
     } else {
         None
     };
-    let machine = profile.machine(instance)?;
+    let legacy_machine = profile.machine(instance)?;
     let runtime = if std::env::var_os("NOOK_LEGACY_RUNTIME").is_some() {
-        PathBuf::from(format!("/run/{machine}"))
+        PathBuf::from(format!("/run/{legacy_machine}"))
     } else {
         profile.declared_runtime(instance)?
     };
@@ -1318,19 +1320,30 @@ pub fn serve(profile: &Profile, instance: &str) -> Result<i32> {
         profile.owner_key()?,
         profile.get("name")?
     );
-    let allocation = uid_range(&reservation_key, &machine, persistent_home.is_none())?;
+    let allocation = uid_range(&reservation_key, &legacy_machine, persistent_home.is_none())?;
     let uid_offset = allocation.uid_offset;
-    fs::write(runtime.join("host-identity"), profile.host_identity()?)?;
+    let invocation = env::var("INVOCATION_ID")?;
+    if !valid_invocation_id(&invocation) {
+        return Err("invalid systemd invocation ID for the sandbox supervisor".into());
+    }
+    let machine = format!("nook-{invocation}");
+    let boot = runtime.join(&machine);
+    fs::create_dir(&boot)?;
+    fs::write(boot.join("host-identity"), profile.host_identity()?)?;
     // A running instance may outlive the host generation that declared it.
     // Keep its complete guest/profile closure alive until systemd removes the
     // runtime directory, including when the supervisor is forcibly killed.
     command_ok(
         Command::new("nix-store")
             .arg("--add-root")
-            .arg(runtime.join("profile-root"))
+            .arg(boot.join("profile-root"))
             .args(["--indirect", "--realise"])
             .arg(&canonical)
             .stdout(Stdio::null()),
+    )?;
+    symlink(
+        Path::new(&machine).join("profile-root"),
+        runtime.join("profile-root"),
     )?;
     // Some guest directories must be owned by the host owner before ID
     // mapping. Hide their ancestors from host processes during preparation,
@@ -1942,6 +1955,7 @@ pub fn enter(
     command: &[String],
     directory: Option<&Path>,
     host_environment: &[String],
+    expected_machine: Option<&str>,
 ) -> Result<i32> {
     let caller: u32 = env::var("PKEXEC_UID")?.parse()?;
     if caller != profile.host_uid()? {
@@ -1958,8 +1972,11 @@ pub fn enter(
     }
     // Authorization uses today's installed profile. Entry must use the guest's
     // pinned generation, which can intentionally outlive a host rebuild.
-    let running = profile.running_profile(instance)?;
-    let profile = &running;
+    let running = profile.running_instance(instance)?;
+    if expected_machine.is_some_and(|expected| running.boot_machine() != Some(expected)) {
+        return Err("sandbox restarted before entry; retry the command".into());
+    }
+    let profile = &running.entry_profile(profile)?;
     if host_environment.iter().any(|assignment| {
         !crate::config::valid_forwarded_environment_assignment(
             assignment,
@@ -1979,7 +1996,7 @@ pub fn enter(
     } else {
         command
     };
-    let machine = profile.machine(instance)?;
+    let machine = &running.machine;
     let destination = format!("{}@{machine}", profile.get("username")?);
     // The entry client controls neither executable lookup nor this root
     // process's environment. The root-installed running profile restricts the
@@ -2018,7 +2035,7 @@ pub fn enter(
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
         return crate::session_pty::run(
             run,
-            &machine,
+            machine,
             profile.guest_uid()?,
             profile.get("entry")?,
             command,
@@ -2044,7 +2061,8 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         return Err("system services require an immutable Nix store profile".into());
     }
     check_supervisor_executable(profile)?;
-    let runtime = profile.supervisor_runtime(instance)?;
+    let boot = profile.running_instance(instance)?;
+    let runtime = &boot.runtime;
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -2052,25 +2070,24 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         .truncate(false)
         .open(runtime.join("reload.lock"))?;
     lock.try_lock()?;
-    let pinned_path = fs::canonicalize(runtime.join("profile-root"))?;
     // Apply the same pinned host-identity check used by entry. A host account
     // whose numeric IDs changed must restart rather than switching a lifetime
     // that was created with the previous credentials.
-    let running = match profile.running_profile_for_reload(instance) {
+    let running = match boot.load_profile(profile) {
         Ok(running) => running,
         Err(error) => return restart_required(instance, error),
     };
     if let Some(reason) = reload_restart_reason(&running, profile)? {
         return restart_required(instance, reason);
     }
-    if pinned_path == canonical {
+    if running.dir == canonical {
         // A crash after repinning but before removing the marker is safe to
         // finish. A marker naming another generation represents a partial
         // switch that this profile cannot repair and must remain fail-closed.
-        clear_completed_reload_failure(&runtime, &canonical)?;
+        clear_completed_reload_failure(runtime, &canonical)?;
         return Ok(0);
     }
-    let machine = profile.machine(instance)?;
+    let machine = &boot.machine;
     let output = Command::new("systemctl")
         .arg("is-active")
         .arg("--quiet")
@@ -2097,7 +2114,7 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         }
         let output = Command::new("systemd-run")
             .arg("--machine")
-            .arg(&machine)
+            .arg(machine)
             .arg("--wait")
             .arg("--pipe")
             .arg(switch)
@@ -2120,7 +2137,7 @@ pub fn reload(profile: &Profile, instance: &str) -> Result<i32> {
         let deadline = Instant::now() + Duration::from_secs(330);
         loop {
             let output = Command::new("systemctl")
-                .args(["--machine", &machine, "show", home_manager_service])
+                .args(["--machine", machine, "show", home_manager_service])
                 .args(["--property=ActiveState", "--value"])
                 .output()?;
             if !output.status.success() {

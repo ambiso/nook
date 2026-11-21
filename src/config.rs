@@ -50,6 +50,53 @@ pub struct Profile {
     pub system_rules: Vec<String>,
     pub pasta: Vec<String>,
 }
+
+pub struct RunningInstance {
+    pub(crate) machine: String,
+    pub(crate) runtime: PathBuf,
+    boot_scoped: bool,
+}
+
+pub(crate) fn valid_invocation_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+impl RunningInstance {
+    pub fn boot_machine(&self) -> Option<&str> {
+        self.boot_scoped.then_some(&self.machine)
+    }
+
+    pub fn entry_profile(&self, installed: &Profile) -> Result<Profile> {
+        if self.runtime.join("reload-failed").try_exists()? {
+            return Err(
+                "the last live reload failed; retry it or restart the instance before entering"
+                    .into(),
+            );
+        }
+        self.load_profile(installed)
+    }
+
+    pub(crate) fn load_profile(&self, installed: &Profile) -> Result<Profile> {
+        // Read the direct GC root inside the selected boot directory. A legacy
+        // runtime's root must still be a direct store link if it was restarted.
+        let target = fs::read_link(self.runtime.join("profile-root"))?;
+        if !target.starts_with("/nix/store/") {
+            return Err("running profile must be an immutable Nix store path".into());
+        }
+        let directory = fs::canonicalize(target)?;
+        if !directory.starts_with("/nix/store/") {
+            return Err("running profile must be an immutable Nix store path".into());
+        }
+        let running = Profile::load(&directory)?;
+        installed.check_running_identity(&running)?;
+        if running.values.contains_key("identityVersion") {
+            let recorded = fs::read_to_string(self.runtime.join("host-identity"))?;
+            installed.check_host_identity(&recorded)?;
+        }
+        Ok(running)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Mount {
     pub mode: String,
@@ -238,35 +285,33 @@ fn resolve_owner(values: &mut BTreeMap<String, String>) -> Result<()> {
 }
 
 impl Profile {
-    pub fn running_profile(&self, instance: &str) -> Result<Self> {
+    pub fn running_instance(&self, instance: &str) -> Result<RunningInstance> {
         let runtime = self.supervisor_runtime(instance)?;
-        if runtime.join("reload-failed").exists() {
-            return Err(
-                "the last live reload failed; retry it or restart the instance before entering"
-                    .into(),
-            );
+        // The root supervisor publishes a single link to both the boot name
+        // and its GC root. A replacement boot always uses a different target.
+        let target = fs::read_link(runtime.join("profile-root"))?;
+        if target.starts_with("/nix/store/") {
+            return Ok(RunningInstance {
+                machine: self.machine(instance)?,
+                runtime,
+                boot_scoped: false,
+            });
         }
-        self.running_profile_for_reload(instance)
-    }
-
-    pub fn running_profile_for_reload(&self, instance: &str) -> Result<Self> {
-        // This GC root is published by the root supervisor in its root-owned
-        // RuntimeDirectory, not in the owner's writable session directory.
-        let runtime = self.supervisor_runtime(instance)?;
-        let directory = fs::canonicalize(runtime.join("profile-root"))?;
-        if !directory.starts_with("/nix/store/") {
-            return Err("running profile must be an immutable Nix store path".into());
-        }
-        let running = Self::load(&directory)?;
-        self.check_running_identity(&running)?;
-        if running.values.contains_key("identityVersion") {
-            // The store profile contains the account name, not the IDs that
-            // were used to boot this lifetime. Those are pinned separately by
-            // the root supervisor, outside every owner-writable directory.
-            let recorded = fs::read_to_string(runtime.join("host-identity"))?;
-            self.check_host_identity(&recorded)?;
-        }
-        Ok(running)
+        let machine = target
+            .parent()
+            .and_then(Path::to_str)
+            .filter(|name| name.strip_prefix("nook-").is_some_and(valid_invocation_id))
+            .filter(|_| {
+                target
+                    .file_name()
+                    .is_some_and(|file| file == "profile-root")
+            })
+            .ok_or("invalid running sandbox profile link")?;
+        Ok(RunningInstance {
+            machine: machine.to_owned(),
+            runtime: runtime.join(machine),
+            boot_scoped: true,
+        })
     }
 
     pub fn check_running_identity(&self, running: &Self) -> Result<()> {
@@ -320,7 +365,9 @@ impl Profile {
     pub fn supervisor_runtime(&self, instance: &str) -> Result<PathBuf> {
         let legacy = Path::new("/run").join(self.machine(instance)?);
         let declared = self.declared_runtime(instance)?;
-        if !declared.join("profile-root").exists() && legacy.join("profile-root").exists() {
+        if fs::symlink_metadata(declared.join("profile-root")).is_err()
+            && fs::symlink_metadata(legacy.join("profile-root")).is_ok()
+        {
             return Ok(legacy);
         }
         Ok(declared)

@@ -46,6 +46,8 @@ struct Enter {
     entry_directory: Option<PathBuf>,
     #[arg(long, value_parser = parse_host_environment)]
     host_environment: Vec<String>,
+    #[arg(long)]
+    expected_machine: Option<String>,
     #[arg(last = true)]
     command: Vec<String>,
 }
@@ -149,6 +151,7 @@ fn run() -> Result<i32> {
                 &request.command,
                 request.entry_directory.as_deref(),
                 &request.host_environment,
+                request.expected_machine.as_deref(),
             )
         }
         Action::Delete(request) => {
