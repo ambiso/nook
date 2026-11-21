@@ -4,7 +4,7 @@ mod completion;
 mod portal;
 mod tui;
 mod tui_colors;
-mod tui_usage;
+mod usage;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use colored_json::{Color, ColorMode, Paint, Style};
@@ -505,6 +505,8 @@ struct ListedInstance<'a> {
     profile: &'a str,
     instance: &'a str,
     running: bool,
+    #[serde(flatten)]
+    usage: usage::Usage,
 }
 
 fn write_choices(
@@ -594,6 +596,11 @@ fn write_choices(
 }
 
 fn print_choices(profiles: &[Profile], choices: &[Choice], format: ListFormat) -> Result<()> {
+    let mut usage = match format {
+        ListFormat::Json => usage::UsageMonitor::snapshot(profiles, choices),
+        ListFormat::Text => Vec::new(),
+    }
+    .into_iter();
     let entries = choices
         .iter()
         .map(|choice| {
@@ -601,6 +608,7 @@ fn print_choices(profiles: &[Profile], choices: &[Choice], format: ListFormat) -
                 profile: profiles[choice.profile].get("name")?,
                 instance: &choice.instance,
                 running: choice.running,
+                usage: usage.next().unwrap_or_default(),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -904,11 +912,18 @@ mod tests {
                 profile: "dev",
                 instance: "main",
                 running: true,
+                usage: usage::Usage {
+                    uptime_seconds: Some(3600),
+                    cpu_percent: Some(12.5),
+                    ram_bytes: Some(1_048_576),
+                    swap_bytes: Some(0),
+                },
             },
             ListedInstance {
                 profile: "dev",
                 instance: "n-example",
                 running: false,
+                usage: usage::Usage::default(),
             },
         ];
 
@@ -933,6 +948,11 @@ mod tests {
         assert!(!output.contains("\u{1b}["));
         let decoded: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(decoded[1]["instance"], "n-example");
+        assert_eq!(decoded[0]["uptime_seconds"], 3600);
+        assert_eq!(decoded[0]["cpu_percent"], 12.5);
+        assert_eq!(decoded[0]["ram_bytes"], 1_048_576);
+        assert_eq!(decoded[0]["swap_bytes"], 0);
+        assert!(decoded[1].get("cpu_percent").unwrap().is_null());
 
         let mut output = Vec::new();
         write_choices(&entries, ListFormat::Json, true, false, &mut output).unwrap();

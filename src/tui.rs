@@ -3,7 +3,7 @@ use crate::{
     prepare_deletion, request_stop,
     storage::SavedInstance,
     tui_colors::ProfilePalette,
-    tui_usage::{Usage, UsageMonitor},
+    usage::{Usage, UsageMonitor},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -38,8 +38,7 @@ pub fn running_indicator(running: bool) -> Span<'static> {
 }
 
 struct Columns {
-    profile: usize,
-    instance: usize,
+    name: usize,
     stats_count: usize,
 }
 
@@ -47,30 +46,22 @@ impl Columns {
     const STAT_WIDTH: usize = 10;
 
     fn fit(width: usize, profiles: &[Profile], entries: &[Choice]) -> Self {
-        let profile = profiles
+        let name = entries
             .iter()
-            .map(|p| p.values["name"].len())
+            .map(|entry| {
+                if entry.instance == "main" {
+                    profiles[entry.profile].values["name"].len()
+                } else {
+                    Branch::Child.prefix().chars().count() + entry.instance.len()
+                }
+            })
             .max()
             .unwrap_or(0)
-            .max("Profile".len());
-        let instance = entries
-            .iter()
-            .map(|entry| entry.instance.len())
-            .max()
-            .unwrap_or(0)
-            .max("Instance".len());
+            .max("Sandbox".len());
         // Reserve two cells each for the selection marker and the running dot.
-        let base_width = 4 + profile + 1 + instance + 1 + "running".len();
+        let base_width = 4 + name + 1 + "running".len();
         let stats_count = width.saturating_sub(base_width) / (1 + Self::STAT_WIDTH);
-        Self {
-            profile,
-            instance,
-            stats_count,
-        }
-    }
-
-    fn identity_tail(&self, instance: &str, status: &str) -> String {
-        format!(" {instance:<width$} {status:<7}", width = self.instance)
+        Self { name, stats_count }
     }
 
     fn stats(&self, ram: &str, swap: &str, uptime: &str, cpu: &str) -> String {
@@ -111,11 +102,10 @@ fn format_bytes(bytes: Option<u64>) -> String {
     unreachable!()
 }
 
-fn format_uptime(uptime: Option<Duration>) -> String {
-    let Some(uptime) = uptime else {
+fn format_uptime(uptime: Option<u64>) -> String {
+    let Some(seconds) = uptime else {
         return "—".into();
     };
-    let seconds = uptime.as_secs();
     match seconds {
         0..60 => format!("{seconds}s"),
         60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
@@ -130,20 +120,67 @@ fn refresh(profiles: &[Profile], monitor: &mut UsageMonitor) -> Result<(Vec<Choi
     Ok((entries, usage))
 }
 
-fn matching_indices(entries: &[Choice], profiles: &[Profile], query: &str) -> Vec<usize> {
-    if query.is_empty() {
-        return (0..entries.len()).collect();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Branch {
+    Profile,
+    Child,
+    LastChild,
+}
+
+impl Branch {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Profile => "",
+            Self::Child => "  ├─ ",
+            Self::LastChild => "  └─ ",
+        }
     }
-    let query = query.to_lowercase();
-    entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, choice)| {
-            let name = profiles[choice.profile].values["name"].to_lowercase();
-            let label = format!("{} {}", name, choice.instance.to_lowercase());
-            label.contains(&query).then_some(index)
-        })
-        .collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VisibleRow {
+    entry: usize,
+    branch: Branch,
+    matches: bool,
+}
+
+fn visible_rows(entries: &[Choice], profiles: &[Profile], query: &str) -> Vec<VisibleRow> {
+    let query = query.to_ascii_lowercase();
+    let mut rows = Vec::new();
+    let mut first = 0;
+    // The catalog lists each profile's main instance first, followed by its children.
+    for group in entries.chunk_by(|left, right| left.profile == right.profile) {
+        let name = &profiles[group[0].profile].values["name"];
+        let matches = |choice: &Choice| {
+            query.is_empty()
+                || format!("{name} {}", choice.instance)
+                    .to_ascii_lowercase()
+                    .contains(&query)
+        };
+        let parent_matches = matches(&group[0]);
+        let parent = rows.len();
+        rows.push(VisibleRow {
+            entry: first,
+            branch: Branch::Profile,
+            matches: parent_matches,
+        });
+        for (index, child) in group.iter().enumerate().skip(1) {
+            if matches(child) {
+                rows.push(VisibleRow {
+                    entry: first + index,
+                    branch: Branch::Child,
+                    matches: true,
+                });
+            }
+        }
+        if rows.len() > parent + 1 {
+            rows.last_mut().unwrap().branch = Branch::LastChild;
+        } else if !parent_matches {
+            rows.pop();
+        }
+        first += group.len();
+    }
+    rows
 }
 
 impl NamePrompt {
@@ -192,40 +229,70 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 return Err("no sandbox profiles are configured".into());
             }
             let active_query = search_draft.as_deref().unwrap_or(&query);
-            let visible = matching_indices(&entries, profiles, active_query);
-            let selected = (!visible.is_empty())
-                .then(|| selection.selected().unwrap_or(0).min(visible.len() - 1));
+            let visible = visible_rows(&entries, profiles, active_query);
+            // Context rows show where a match lives but never receive launch or stop actions.
+            let selectable: Vec<_> = visible
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| row.matches.then_some(index))
+                .collect();
+            let cursor = selection
+                .selected()
+                .and_then(|selected| selectable.iter().position(|&index| index == selected))
+                .or_else(|| (!selectable.is_empty()).then_some(0));
+            let selected = cursor.map(|index| selectable[index]);
             selection.select(selected);
+            let selected_choice = selected.map(|index| &entries[visible[index].entry]);
             terminal.draw(|frame| {
                 let [list_area, help_area] =
                     Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
                         .areas(frame.area());
-                let border = Block::bordered().title(format!(" Nook ({}/{}) ", visible.len(), entries.len()));
+                let border = Block::bordered().title(format!(" Nook ({}/{}) ", selectable.len(), entries.len()));
                 let [header_area, rows_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
                     .areas(border.inner(list_area));
                 frame.render_widget(border, list_area);
                 let columns = Columns::fit(header_area.width.into(), profiles, &entries);
                 let header = format!(
-                    "    {:<width$}{}{}",
-                    "Profile",
-                    columns.identity_tail("Instance", "Status"),
+                    "    {:<width$} {:<7}{}",
+                    "Sandbox",
+                    "Status",
                     columns.stats("RAM", "Swap", "Uptime", "CPU"),
-                    width = columns.profile,
+                    width = columns.name,
                 );
                 frame.render_widget(Line::styled(header, Style::new().add_modifier(Modifier::BOLD)), header_area);
 
-                let rows = visible.iter().map(|&index| {
-                    let choice = &entries[index];
-                    let usage = &usage[index];
-                    let profile = &profiles[choice.profile].values["name"];
+                let rows = visible.iter().map(|row| {
+                    let choice = &entries[row.entry];
+                    let usage = &usage[row.entry];
+                    let name: &str = if row.branch == Branch::Profile {
+                        &profiles[choice.profile].values["name"]
+                    } else {
+                        &choice.instance
+                    };
+                    let prefix = row.branch.prefix();
+                    let name_width = columns.name - prefix.chars().count();
                     let status = if choice.running { "running" } else { "stopped" };
-                    let cpu = usage.cpu_percent.map_or_else(|| "—".into(), |percent| format!("{percent:.1}%"));
-                    ListItem::new(Line::from(vec![
+                    let cpu = usage.cpu_percent.map_or_else(
+                        || "—".into(),
+                        |percent| format!("{percent:.1}%"),
+                    );
+                    let metrics = columns.stats(
+                        &format_bytes(usage.ram_bytes),
+                        &format_bytes(usage.swap_bytes),
+                        &format_uptime(usage.uptime_seconds),
+                        &cpu,
+                    );
+                    let line = Line::from(vec![
                         running_indicator(choice.running),
-                        Span::styled(format!("{profile:<width$}", width = columns.profile), Style::new().fg(profile_colors[choice.profile])),
-                        Span::raw(columns.identity_tail(&choice.instance, status)),
-                        Span::raw(columns.stats(&format_bytes(usage.ram), &format_bytes(usage.swap), &format_uptime(usage.uptime), &cpu)),
-                    ]))
+                        Span::raw(prefix),
+                        Span::styled(format!("{name:<name_width$}"), Style::new().fg(profile_colors[choice.profile])),
+                        Span::raw(format!(" {status:<7}{metrics}")),
+                    ]);
+                    if row.matches {
+                        ListItem::new(line)
+                    } else {
+                        ListItem::new(line).style(Style::new().add_modifier(Modifier::DIM))
+                    }
                 });
                 let list = List::new(rows)
                     .highlight_symbol("› ")
@@ -394,43 +461,43 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Char('/') => search_draft = Some(query.clone()),
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if let Some(selected) = selected {
-                            selection.select(Some((selected + 1) % visible.len()));
+                        if let Some(cursor) = cursor {
+                            selection.select(Some(selectable[(cursor + 1) % selectable.len()]));
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if let Some(selected) = selected {
-                            selection.select(Some((selected + visible.len() - 1) % visible.len()));
+                        if let Some(cursor) = cursor {
+                            let previous = (cursor + selectable.len() - 1) % selectable.len();
+                            selection.select(Some(selectable[previous]));
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(selected) = selected {
-                            return Ok(Some(entries[visible[selected]].clone()));
+                        if let Some(choice) = selected_choice {
+                            return Ok(Some(choice.clone()));
                         }
                     }
                     KeyCode::Char('n') => {
-                        if let Some(selected) = selected {
+                        if let Some(choice) = selected_choice {
                             prompt = Some(NamePrompt {
                                 // The selected profile is the template, even when
                                 // the cursor is on one of its existing instances.
-                                profile: entries[visible[selected]].profile,
+                                profile: choice.profile,
                                 name: String::new(),
                                 error: None,
                             });
                         }
                     }
                     KeyCode::Char('e') => {
-                        if let Some(selected) = selected {
+                        if let Some(choice) = selected_choice {
                             return Ok(Some(Choice {
-                                profile: entries[visible[selected]].profile,
+                                profile: choice.profile,
                                 instance: new_ephemeral_id()?,
                                 running: false,
                             }));
                         }
                     }
                     KeyCode::Char('s') => {
-                        if let Some(selected) = selected {
-                            let choice = &entries[visible[selected]];
+                        if let Some(choice) = selected_choice {
                             let profile = &profiles[choice.profile];
                             if !request_stop(profile, &choice.instance)?.success() {
                                 status = Some(format!(
@@ -450,12 +517,11 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                         }
                     }
                     KeyCode::Char('d') => {
-                        if let Some(selected) = selected {
-                            let choice = entries[visible[selected]].clone();
+                        if let Some(choice) = selected_choice {
                             match prepare_deletion(&profiles[choice.profile], &choice.instance) {
                                 Ok(saved) => {
                                     deletion = Some(DeletePrompt {
-                                        choice,
+                                        choice: choice.clone(),
                                         saved,
                                         error: None,
                                     })
@@ -484,7 +550,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn search_indices_still_point_to_the_original_choices() {
+    fn child_search_keeps_a_nonselectable_parent_for_context() {
         let profile = |name: &str| Profile {
             dir: Default::default(),
             values: [("name".into(), name.into())].into(),
@@ -502,21 +568,36 @@ mod tests {
                 running: true,
             },
             Choice {
-                profile: 1,
-                instance: "main".into(),
-                running: false,
-            },
-            Choice {
                 profile: 0,
                 instance: "n-project".into(),
                 running: false,
             },
+            Choice {
+                profile: 1,
+                instance: "main".into(),
+                running: false,
+            },
         ];
 
-        assert_eq!(matching_indices(&entries, &profiles, "STEAM"), [1]);
-        assert_eq!(matching_indices(&entries, &profiles, "project"), [2]);
-        assert_eq!(matching_indices(&entries, &profiles, "dev n-pro"), [2]);
-        assert!(matching_indices(&entries, &profiles, "missing").is_empty());
+        assert_eq!(visible_rows(&entries, &profiles, "STEAM")[0].entry, 2);
+        for query in ["project", "dev n-pro"] {
+            assert_eq!(
+                visible_rows(&entries, &profiles, query),
+                [
+                    VisibleRow {
+                        entry: 0,
+                        branch: Branch::Profile,
+                        matches: false
+                    },
+                    VisibleRow {
+                        entry: 1,
+                        branch: Branch::LastChild,
+                        matches: true
+                    },
+                ]
+            );
+        }
+        assert!(visible_rows(&entries, &profiles, "missing").is_empty());
     }
 
     #[test]

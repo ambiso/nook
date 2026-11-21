@@ -8,6 +8,8 @@ instance from the same configuration. Each instance has its own home, user
 namespace, network namespace, and systemd managers. Closing a terminal leaves
 the instance running.
 
+![The Nook selector in GNOME Console, showing demo instances and their resource use](docs/nook-tui.png)
+
 The launcher and terminal selector are written in Rust. Sandboxes can run
 ordinary systemd services, including user services configured with Home Manager.
 Named instances keep their homes; ephemeral instances get clean temporary homes.
@@ -460,6 +462,9 @@ nk delete dev --name my-project        # confirm permanent removal of saved data
 tab-separated output when redirected. JSON is pretty-printed and colored on a
 terminal, while redirected `--format=json` output is compact JSON without ANSI
 escapes. Set `NO_COLOR` to disable color without disabling terminal formatting.
+Each JSON entry includes `uptime_seconds`, `cpu_percent`, `ram_bytes`, and
+`swap_bytes`. Unavailable readings are `null`. CPU is sampled over a short
+interval, with 100% representing one fully used core.
 
 If Home Manager refuses to replace an existing file, the activation fails and
 the sandbox stays running in recovery mode. Resolve the conflicting file by
@@ -480,6 +485,10 @@ instance, **s** to stop, **d** to delete a stopped named instance after confirma
 and **q** to quit. Running instances have a green **●** to their left. Named
 instances remain listed when stopped. Names accept 1–24 lowercase letters,
 digits, or hyphens.
+
+Each profile row represents its main instance. Named and ephemeral instances
+appear beneath it. When a search matches only a child, its profile stays visible
+for context and the cursor moves among the matches.
 
 On wider terminals the selector shows RAM, Swap, Uptime, and CPU. RAM counts
 resident anonymous and shared memory, including tmpfs, and excludes ordinary
@@ -701,6 +710,9 @@ and liability terms apply.
 See [development and tests](docs/development.md) for the Rust environment, native
 tests, Miri, and NixOS VM integration tests, and
 [startup measurements](docs/benchmarks.md) for profiling tools and recorded results.
+
+Run `./scripts/update-screenshot` to regenerate the image above. It renders KGX
+on a private virtual display with sample profiles and metrics.
 
 ## AI assistance
 

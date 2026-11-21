@@ -1,5 +1,6 @@
 use crate::{Choice, Profile};
 use rustix::time::{ClockId, clock_gettime};
+use serde::Serialize;
 use std::{
     collections::HashMap,
     fs,
@@ -8,12 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Default)]
+#[derive(Default, Serialize)]
 pub(crate) struct Usage {
-    pub uptime: Option<Duration>,
+    pub uptime_seconds: Option<u64>,
     pub cpu_percent: Option<f64>,
-    pub ram: Option<u64>,
-    pub swap: Option<u64>,
+    pub ram_bytes: Option<u64>,
+    pub swap_bytes: Option<u64>,
 }
 
 struct CpuSample {
@@ -43,6 +44,18 @@ pub(crate) struct UsageMonitor {
 }
 
 impl UsageMonitor {
+    pub fn snapshot(profiles: &[Profile], entries: &[Choice]) -> Vec<Usage> {
+        let mut monitor = Self::default();
+        let initial = monitor.sample(profiles, entries);
+        if monitor.cpu.is_empty() {
+            return initial;
+        }
+        // The JSON command has no prior sample. Take a short CPU measurement
+        // so it remains responsive when used to populate a launcher menu.
+        std::thread::sleep(Duration::from_millis(200));
+        monitor.sample(profiles, entries)
+    }
+
     pub fn sample(&mut self, profiles: &[Profile], entries: &[Choice]) -> Vec<Usage> {
         let output = if entries.iter().any(|entry| entry.running) {
             // Query all active units together so refresh costs one process, not one per row.
@@ -102,13 +115,14 @@ impl UsageMonitor {
                         .ok()
                         .filter(|&value| value != u64::MAX)
                 };
-                usage.uptime = counter("ActiveEnterTimestampMonotonic")
+                usage.uptime_seconds = counter("ActiveEnterTimestampMonotonic")
                     .filter(|&started| started != 0)
-                    .and_then(|started| since_boot.checked_sub(Duration::from_micros(started)));
-                usage.ram = properties
+                    .and_then(|started| since_boot.checked_sub(Duration::from_micros(started)))
+                    .map(|uptime| uptime.as_secs());
+                usage.ram_bytes = properties
                     .get("ControlGroup")
                     .and_then(|path| read_resident_ram(path));
-                usage.swap = counter("MemorySwapCurrent");
+                usage.swap_bytes = counter("MemorySwapCurrent");
                 if let (Some(&invocation), Some(cpu_ns)) =
                     (properties.get("InvocationID"), counter("CPUUsageNSec"))
                     && !invocation.is_empty()

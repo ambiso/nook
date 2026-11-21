@@ -133,6 +133,11 @@ def main():
         cases = [
             ([("Nook", b"n"), ("template:", b"project\r")], names[0], "n-project"),
             ([("Nook", b"j\r")], names[0], "n-saved"),
+            (
+                [("└─", f"/{names[0]} n-saved\r\r".encode())],
+                names[0],
+                "n-saved",
+            ),
             ([("Nook", b"jjn"), ("template:", b"other\r")], names[1], "n-other"),
             ([("Nook", b"e")], names[0], r"e-[a-f0-9]{16}"),
         ]
@@ -217,6 +222,7 @@ def main():
                 rf"sandbox-{owner_key()}-{re.escape(names[0])}@main\.service",
                 stop_arguments[1],
             ), stop_arguments
+            stopped.unlink()
             result = subprocess.run(
                 [
                     str(binary),
@@ -236,7 +242,7 @@ def main():
             assert len(units) == 4, units
             assert all(
                 unit
-                    == f"sandbox-{owner_key()}-{names[int(index / 2)]}@{instance}.service"
+                == f"sandbox-{owner_key()}-{names[int(index / 2)]}@{instance}.service"
                 for index, (unit, instance) in enumerate(
                     zip(units, ["main", "n-saved", "main", "n-saved"])
                 )
@@ -299,8 +305,8 @@ def main():
                 assert result.returncode == 1, result.stderr
                 assert saved.is_dir()
 
-            # Cancelling the TUI dialog keeps all data; confirming removes only
-            # that named instance, not the template or its neighbor.
+            # Cancelling the dialog keeps all data. The VM suite exercises
+            # confirmed deletion with the real, registered host helper.
             (saved / "home/keep").write_text("saved data")
             assert (
                 select_instance(
@@ -312,39 +318,12 @@ def main():
                 == 0
             )
             assert (saved / "home/keep").read_text() == "saved data"
-            assert (
-                select_instance(
-                    binary,
-                    profiles,
-                    environment,
-                    [("Nook", b"jd"), ("instance?", b"yq")],
-                )
-                == 0
-            )
-            assert not saved.exists()
             assert other.is_dir()
-            result = subprocess.run(
-                [
-                    str(binary),
-                    "--profiles",
-                    str(profiles),
-                    "delete",
-                    names[1],
-                    "--name",
-                    "saved",
-                    "--yes",
-                ],
-                env=environment,
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode == 0, result.stderr
-            assert not other.exists()
         finally:
             for name in names:
                 shutil.rmtree(runtime / name, ignore_errors=True)
         print(
-            "CLI/TUI checks passed: --join, naming, instances, deletion guards, confirmation, cancellation, quit"
+            "CLI/TUI checks passed: --join, naming, tree search, stop, deletion guards and cancellation"
         )
 
 

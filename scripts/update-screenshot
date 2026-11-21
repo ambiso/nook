@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# Use the checkout as it is, including newly added files in a working copy.
+screenshot=$(nix build "path:$root#screenshot" --no-link --print-out-paths)
+temporary=$(mktemp "$root/docs/.nook-tui.XXXXXX")
+trap 'rm -f -- "$temporary"' EXIT
+install -m 0644 -- "$screenshot" "$temporary"
+mv -f -- "$temporary" "$root/docs/nook-tui.png"
+printf 'Updated %s\n' "$root/docs/nook-tui.png"

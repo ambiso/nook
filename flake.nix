@@ -35,6 +35,36 @@
         in
         {
           nook = pkgs.callPackage ./. { };
+          screenshot =
+            pkgs.runCommand "nook-tui.png"
+              {
+                nativeBuildInputs = with pkgs; [
+                  bubblewrap
+                  dbus
+                  feh
+                  gnome-console
+                  imagemagick
+                  python3
+                  xcompmgr
+                  xdotool
+                  xvfb-run
+                ];
+                FONTCONFIG_FILE = pkgs.makeFontsConf {
+                  fontDirectories = with pkgs; [
+                    adwaita-fonts
+                    dejavu_fonts
+                  ];
+                };
+              }
+              ''
+                export HOME="$TMPDIR/home" XDG_RUNTIME_DIR="$TMPDIR/runtime"
+                mkdir -p "$HOME"
+                mkdir -m 0700 "$XDG_RUNTIME_DIR"
+                xvfb-run -a -s '-screen 0 1440x900x24 -nolisten tcp -dpi 96' \
+                  dbus-run-session --config-file=${pkgs.dbus}/share/dbus-1/session.conf \
+                  -- python3 ${./scripts/render-screenshot.py} \
+                  ${self.packages.${system}.nook}/bin/.nk-wrapped "$out"
+              '';
           arch-host = pkgs.runCommand "nook-arch-host" { } ''
             mkdir -p "$out/bin"
             ln -s ${self.packages.${system}.nook}/bin/nook-host-install "$out/bin/nook-host-install"
