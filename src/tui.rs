@@ -2,6 +2,7 @@ use crate::{
     Choice, Profile, Result, choices, delete_instance, new_ephemeral_id, parse_name,
     prepare_deletion, request_stop,
     storage::SavedInstance,
+    tui_colors::ProfilePalette,
     tui_usage::{Usage, UsageMonitor},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -12,7 +13,6 @@ use ratatui::{
     widgets::{Block, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
-    env,
     io::{self, IsTerminal},
     time::{Duration, Instant},
 };
@@ -34,36 +34,6 @@ pub fn running_indicator(running: bool) -> Span<'static> {
         Span::styled("● ", Style::new().fg(Color::Green))
     } else {
         Span::raw("  ")
-    }
-}
-
-fn supports_extended_colors() -> bool {
-    env::var("TERM").is_ok_and(|term| term.ends_with("-256color") || term.ends_with("-direct"))
-        || env::var("COLORTERM").is_ok_and(|color| matches!(color.as_str(), "truecolor" | "24bit"))
-}
-
-fn profile_color(name: &str, extended_colors: bool) -> Color {
-    const BASIC_PALETTE: [Color; 6] = [
-        Color::Blue,
-        Color::Cyan,
-        Color::Green,
-        Color::Magenta,
-        Color::Red,
-        Color::Yellow,
-    ];
-    // Use saturated xterm accents with moderate luminance for light and dark backgrounds.
-    const EXTENDED_PALETTE: [u8; 36] = [
-        160, 130, 100, 28, 35, 31, 26, 69, 99, 93, 127, 161, 196, 166, 136, 34, 29, 32, 27, 63, 98,
-        134, 164, 198, 203, 202, 64, 94, 30, 33, 68, 62, 135, 171, 201, 197,
-    ];
-    // FNV-1a keeps the color tied to the profile name across runs and list edits.
-    let hash = name.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-    });
-    if extended_colors {
-        Color::Indexed(EXTENDED_PALETTE[(hash % EXTENDED_PALETTE.len() as u64) as usize])
-    } else {
-        BASIC_PALETTE[(hash % BASIC_PALETTE.len() as u64) as usize]
     }
 }
 
@@ -200,14 +170,14 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err("use nk list, or nk launch PROFILE [--ephemeral] [-- COMMAND ...]".into());
     }
-    let extended_colors = supports_extended_colors();
-    let profile_colors: Vec<_> = profiles
-        .iter()
-        .map(|profile| profile_color(&profile.values["name"], extended_colors))
-        .collect();
     // Ratatui restores raw mode, cursor visibility and the alternate screen
     // after normal errors and panics, before a selected shell takes over.
     ratatui::run(|terminal| {
+        let palette = ProfilePalette::detect();
+        let profile_colors: Vec<_> = profiles
+            .iter()
+            .map(|profile| palette.color(&profile.values["name"]))
+            .collect();
         let mut monitor = UsageMonitor::default();
         let (mut entries, mut usage) = refresh(profiles, &mut monitor)?;
         let mut selection = ListState::default().with_selected(Some(0));

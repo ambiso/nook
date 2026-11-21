@@ -3,6 +3,7 @@
 mod completion;
 mod portal;
 mod tui;
+mod tui_colors;
 mod tui_usage;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
