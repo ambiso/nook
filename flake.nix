@@ -104,6 +104,10 @@
           pkgs = pkgsFor system;
           inherit home-manager;
         };
+        interactive-pty = import ./tests/interactive-pty.nix {
+          pkgs = pkgsFor system;
+          inherit home-manager;
+        };
         portal-uid-matched = import ./tests/portal-uid.nix {
           pkgs = pkgsFor system;
           inherit home-manager;

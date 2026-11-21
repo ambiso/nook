@@ -1979,11 +1979,8 @@ pub fn enter(
     } else {
         command
     };
-    let machine = format!(
-        "{}@{}",
-        profile.get("username")?,
-        profile.machine(instance)?
-    );
+    let machine = profile.machine(instance)?;
+    let destination = format!("{}@{machine}", profile.get("username")?);
     // The entry client controls neither executable lookup nor this root
     // process's environment. The root-installed running profile restricts the
     // supplied assignments. systemd-run carries them to the guest command
@@ -1993,18 +1990,16 @@ pub fn enter(
     run.args([
         "--user",
         "--machine",
-        &machine,
+        &destination,
         "--quiet",
         "--wait",
         "--collect",
         "--service-type=exec",
         "--expand-environment=no",
     ]);
-    run.arg(if io::stdin().is_terminal() && io::stdout().is_terminal() {
-        "--pty"
-    } else {
-        "--pipe"
-    });
+    // Pass the terminal slave explicitly for interactive sessions. For a
+    // noninteractive invocation, --pipe continues to pass through our stdio.
+    run.arg("--pipe");
     if !host_environment.is_empty() {
         let names = host_environment
             .iter()
@@ -2020,6 +2015,15 @@ pub fn enter(
         run.arg(format!("--setenv={assignment}"));
     }
     run.arg("--working-directory").arg(directory);
+    if io::stdin().is_terminal() && io::stdout().is_terminal() {
+        return crate::session_pty::run(
+            run,
+            &machine,
+            profile.guest_uid()?,
+            profile.get("entry")?,
+            command,
+        );
+    }
     run.arg("--").arg(profile.get("entry")?).args(command);
     Ok(run
         .status()
