@@ -1,21 +1,10 @@
-use palette::{FromColor, Lab, Srgb};
+use palette::{FromColor, LinSrgb, Oklab, Oklch, Srgb, convert::FromColorUnclamped};
 use ratatui::style::Color;
 use std::env;
 
 type Rgb = [u8; 3];
 
-// Codex's default syntax themes are Catppuccin Mocha and Latte. These are the
-// standalone foreground accents from https://github.com/catppuccin/bat, in theme
-// order, excluding the base text, background, comment, and punctuation colors.
-// The Catppuccin license is in LICENSES/Catppuccin-MIT.txt.
-const MOCHA: [u32; 15] = [
-    0xa6e3a1, 0xf5c2e7, 0xfab387, 0xcba6f7, 0x94e2d5, 0x89b4fa, 0xf9e2af, 0xeba0ac, 0xf38ba8,
-    0x89dceb, 0xf2cdcd, 0x74c7ec, 0xb4befe, 0xa6adc8, 0xf5e0dc,
-];
-const LATTE: [u32; 15] = [
-    0x40a02b, 0xea76cb, 0xfe640b, 0x8839ef, 0x179299, 0x1e66f5, 0xdf8e1d, 0xe64553, 0xd20f39,
-    0x04a5e5, 0xdd7878, 0x209fb5, 0x7287fd, 0x6c6f85, 0xdc8a78,
-];
+const HUE_COUNT: usize = 24;
 const MIN_CONTRAST: f64 = 4.5;
 
 pub(crate) struct ProfilePalette(Vec<Color>);
@@ -44,19 +33,26 @@ impl ProfilePalette {
     }
 
     fn themed(truecolor: bool, background: Option<Rgb>) -> Self {
-        let accents = if background.is_some_and(|[r, g, b]| {
+        let light_background = background.is_some_and(|[r, g, b]| {
             0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b) > 128.0
-        }) {
-            LATTE
+        });
+        // Use low chroma for a muted look, with three lightness levels to
+        // help distinguish nearby hues. Keep the hue order across both themes.
+        let lightness = if light_background {
+            [0.46, 0.51, 0.56]
         } else {
-            MOCHA
+            [0.74, 0.80, 0.86]
         };
         Self(
-            accents
+            lightness
                 .into_iter()
-                .map(|accent| {
-                    let [_, r, g, b] = accent.to_be_bytes();
-                    let preferred = [r, g, b];
+                .flat_map(|lightness| {
+                    (0..HUE_COUNT).map(move |index| {
+                        let hue = index as f32 * (360.0 / HUE_COUNT as f32);
+                        muted_accent(lightness, hue)
+                    })
+                })
+                .map(|preferred| {
                     if truecolor {
                         let [r, g, b] =
                             background.map_or(preferred, |bg| readable_rgb(preferred, bg));
@@ -76,6 +72,35 @@ impl ProfilePalette {
         });
         self.0[(hash % self.0.len() as u64) as usize]
     }
+}
+
+fn muted_accent(lightness: f32, hue: f32) -> Rgb {
+    const CHROMA: f32 = 0.095;
+    let linear_rgb = |chroma| LinSrgb::from_color_unclamped(Oklch::new(lightness, chroma, hue));
+    let in_gamut = |rgb: LinSrgb| {
+        [rgb.red, rgb.green, rgb.blue]
+            .iter()
+            .all(|channel| (0.0..=1.0).contains(channel))
+    };
+    let mut rgb = linear_rgb(CHROMA);
+    if !in_gamut(rgb) {
+        // Some hues can't reach the target chroma in sRGB. Reduce chroma alone
+        // so we can keep the hue and lightness without clipping a channel.
+        let (mut low, mut high) = (0.0, CHROMA);
+        rgb = linear_rgb(low);
+        for _ in 0..12 {
+            let chroma = (low + high) / 2.0;
+            let candidate = linear_rgb(chroma);
+            if in_gamut(candidate) {
+                low = chroma;
+                rgb = candidate;
+            } else {
+                high = chroma;
+            }
+        }
+    }
+    let srgb = Srgb::<f32>::from_linear(rgb).into_format::<u8>();
+    [srgb.red, srgb.green, srgb.blue]
 }
 
 fn parse_background(reply: &str) -> Option<Rgb> {
@@ -129,10 +154,10 @@ fn readable_rgb(preferred: Rgb, background: Rgb) -> Rgb {
 }
 
 fn indexed_accent(preferred: Rgb, background: Option<Rgb>) -> Color {
-    fn lab([r, g, b]: Rgb) -> Lab {
-        Lab::from_color(Srgb::new(r, g, b).into_format::<f32>())
+    fn oklab([r, g, b]: Rgb) -> Oklab {
+        Oklab::from_color(Srgb::new(r, g, b).into_format::<f32>())
     }
-    let preferred = lab(preferred);
+    let preferred = oklab(preferred);
     let luminance = background.map(relative_luminance);
     // The first 16 entries are terminal-defined. The fixed xterm cube and gray
     // ramp let us check contrast against the color that will actually be drawn.
@@ -142,7 +167,7 @@ fn indexed_accent(preferred: Rgb, background: Option<Rgb>) -> Color {
             if luminance.is_some_and(|bg| contrast(rgb, bg) < MIN_CONTRAST) {
                 return None;
             }
-            let candidate = lab(rgb);
+            let candidate = oklab(rgb);
             let distance = (preferred.l - candidate.l).powi(2)
                 + (preferred.a - candidate.a).powi(2)
                 + (preferred.b - candidate.b).powi(2);
@@ -164,6 +189,15 @@ fn xterm_rgb(index: u8) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typical_backgrounds_preserve_all_generated_truecolors() {
+        for background in [[30, 30, 46], [239, 241, 245]] {
+            let colors = ProfilePalette::themed(true, Some(background)).0;
+            let distinct: std::collections::HashSet<_> = colors.into_iter().collect();
+            assert_eq!(distinct.len(), 3 * HUE_COUNT);
+        }
+    }
 
     #[test]
     fn light_and_dark_accents_survive_terminal_color_quantization() {

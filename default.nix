@@ -32,7 +32,6 @@ rustPlatform.buildRustPackage {
       ./Cargo.toml
       ./Cargo.lock
       ./LICENSE
-      ./LICENSES
       ./deny.toml
       ./src
       ./tests/completions.py
@@ -71,7 +70,6 @@ rustPlatform.buildRustPackage {
       installShellCompletion --fish --name $name.fish $name.fish
     done
     install -Dm644 LICENSE "$out/share/licenses/nook/LICENSE"
-    install -Dm644 LICENSES/Catppuccin-MIT.txt "$out/share/licenses/nook/Catppuccin-MIT.txt"
     runtimePath=${
       lib.escapeShellArg (
         lib.makeBinPath [
