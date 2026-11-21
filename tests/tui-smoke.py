@@ -194,6 +194,17 @@ def main():
                     unit,
                 ), unit
             assert select_instance(binary, profiles, environment, [("Nook", b"q")]) == 0
+            # A match should be underlined, and Backspace on an empty search
+            # should make the next q quit instead of inserting it in the query.
+            assert (
+                select_instance(
+                    binary,
+                    profiles,
+                    environment,
+                    [("└─", b"/sav"), ("\x1b[4m", b"\x7f\x7f\x7f\x7fq")],
+                )
+                == 0
+            )
             indicator_output = bytearray()
             assert (
                 select_instance(

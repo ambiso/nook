@@ -13,7 +13,9 @@ use ratatui::{
     widgets::{Block, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
+    borrow::Cow,
     io::{self, IsTerminal},
+    ops::Range,
     time::{Duration, Instant},
 };
 
@@ -45,7 +47,12 @@ struct Columns {
 impl Columns {
     const STAT_WIDTH: usize = 10;
 
-    fn fit(width: usize, profiles: &[Profile], entries: &[Choice]) -> Self {
+    fn fit(
+        width: usize,
+        profiles: &[Profile],
+        entries: &[Choice],
+        visible: &[VisibleRow<'_>],
+    ) -> Self {
         let name = entries
             .iter()
             .map(|entry| {
@@ -55,6 +62,11 @@ impl Columns {
                     Branch::Child.prefix().chars().count() + entry.instance.len()
                 }
             })
+            .chain(
+                visible
+                    .iter()
+                    .map(|row| row.branch.prefix().chars().count() + row.label.len()),
+            )
             .max()
             .unwrap_or(0)
             .max("Sandbox".len());
@@ -138,38 +150,72 @@ impl Branch {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct VisibleRow {
+struct VisibleRow<'a> {
     entry: usize,
     branch: Branch,
     matches: bool,
+    label: Cow<'a, str>,
+    highlights: Vec<Range<usize>>,
 }
 
-fn visible_rows(entries: &[Choice], profiles: &[Profile], query: &str) -> Vec<VisibleRow> {
+fn visible_rows<'a>(
+    entries: &'a [Choice],
+    profiles: &'a [Profile],
+    query: &str,
+) -> Vec<VisibleRow<'a>> {
     let query = query.to_ascii_lowercase();
     let mut rows = Vec::new();
     let mut first = 0;
     // The catalog lists each profile's main instance first, followed by its children.
     for group in entries.chunk_by(|left, right| left.profile == right.profile) {
-        let name = &profiles[group[0].profile].values["name"];
-        let matches = |choice: &Choice| {
-            query.is_empty()
-                || format!("{name} {}", choice.instance)
-                    .to_ascii_lowercase()
-                    .contains(&query)
+        let name = profiles[group[0].profile].values["name"].as_str();
+        // Search the full identity, then project matching byte ranges onto the
+        // two labels the tree actually displays. Catalog names and IDs are ASCII.
+        let hits = |instance: &str| -> Vec<Range<usize>> {
+            if query.is_empty() {
+                return Vec::new();
+            }
+            format!("{name} {instance}")
+                .to_ascii_lowercase()
+                .match_indices(&query)
+                .map(|(start, found)| start..start + found.len())
+                .collect()
         };
-        let parent_matches = matches(&group[0]);
+        let mut parent_hits = hits(&group[0].instance);
+        let parent_matches = query.is_empty() || !parent_hits.is_empty();
+        // The main instance ID is normally implicit. Show it during a search
+        // that matched it so the highlighted text explains the result.
+        let parent_label = if parent_hits.iter().any(|hit| hit.end > name.len()) {
+            Cow::Owned(format!("{name} {}", group[0].instance))
+        } else {
+            Cow::Borrowed(name)
+        };
         let parent = rows.len();
         rows.push(VisibleRow {
             entry: first,
             branch: Branch::Profile,
             matches: parent_matches,
+            label: parent_label,
+            highlights: Vec::new(),
         });
         for (index, child) in group.iter().enumerate().skip(1) {
-            if matches(child) {
+            let child_hits = hits(&child.instance);
+            if query.is_empty() || !child_hits.is_empty() {
+                parent_hits.extend(
+                    child_hits
+                        .iter()
+                        .filter_map(|hit| highlight_in(hit, 0..name.len())),
+                );
+                let start = name.len() + 1;
                 rows.push(VisibleRow {
                     entry: first + index,
                     branch: Branch::Child,
                     matches: true,
+                    label: Cow::Borrowed(&child.instance),
+                    highlights: child_hits
+                        .iter()
+                        .filter_map(|hit| highlight_in(hit, start..start + child.instance.len()))
+                        .collect(),
                 });
             }
         }
@@ -178,9 +224,48 @@ fn visible_rows(entries: &[Choice], profiles: &[Profile], query: &str) -> Vec<Vi
         } else if !parent_matches {
             rows.pop();
         }
+        if let Some(row) = rows.get_mut(parent) {
+            parent_hits.sort_unstable_by_key(|range| range.start);
+            row.highlights = parent_hits;
+        }
         first += group.len();
     }
     rows
+}
+
+fn highlight_in(hit: &Range<usize>, label: Range<usize>) -> Option<Range<usize>> {
+    let start = hit.start.max(label.start);
+    let end = hit.end.min(label.end);
+    (start < end).then(|| start - label.start..end - label.start)
+}
+
+fn name_spans<'a>(row: &'a VisibleRow<'_>, width: usize, color: Color) -> Vec<Span<'a>> {
+    let style = Style::new().fg(color);
+    let highlight = style
+        .add_modifier(Modifier::UNDERLINED)
+        .remove_modifier(Modifier::DIM);
+    let label = row.label.as_ref();
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for hit in &row.highlights {
+        // Several children can match the same piece of their shared profile name.
+        if hit.end <= cursor {
+            continue;
+        }
+        if cursor < hit.start {
+            spans.push(Span::styled(&label[cursor..hit.start], style));
+        }
+        spans.push(Span::styled(
+            &label[cursor.max(hit.start)..hit.end],
+            highlight,
+        ));
+        cursor = hit.end;
+    }
+    spans.push(Span::styled(
+        format!("{:<width$}", &label[cursor..], width = width - cursor),
+        style,
+    ));
+    spans
 }
 
 impl NamePrompt {
@@ -251,7 +336,7 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 let [header_area, rows_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
                     .areas(border.inner(list_area));
                 frame.render_widget(border, list_area);
-                let columns = Columns::fit(header_area.width.into(), profiles, &entries);
+                let columns = Columns::fit(header_area.width.into(), profiles, &entries, &visible);
                 let header = format!(
                     "    {:<width$} {:<7}{}",
                     "Sandbox",
@@ -264,11 +349,6 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 let rows = visible.iter().map(|row| {
                     let choice = &entries[row.entry];
                     let usage = &usage[row.entry];
-                    let name: &str = if row.branch == Branch::Profile {
-                        &profiles[choice.profile].values["name"]
-                    } else {
-                        &choice.instance
-                    };
                     let prefix = row.branch.prefix();
                     let name_width = columns.name - prefix.chars().count();
                     let status = if choice.running { "running" } else { "stopped" };
@@ -282,12 +362,13 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                         &format_uptime(usage.uptime_seconds),
                         &cpu,
                     );
-                    let line = Line::from(vec![
+                    let mut spans = vec![
                         Span::raw(prefix),
                         running_indicator(choice.running),
-                        Span::styled(format!("{name:<name_width$}"), Style::new().fg(profile_colors[choice.profile])),
-                        Span::raw(format!(" {status:<7}{metrics}")),
-                    ]);
+                    ];
+                    spans.extend(name_spans(row, name_width, profile_colors[choice.profile]));
+                    spans.push(Span::raw(format!(" {status:<7}{metrics}")));
+                    let line = Line::from(spans);
                     if row.matches {
                         ListItem::new(line)
                     } else {
@@ -432,7 +513,10 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                             search_draft = None;
                         }
                         KeyCode::Backspace => {
-                            draft.pop();
+                            if draft.pop().is_none() {
+                                query.clear();
+                                search_draft = None;
+                            }
                             selection.select(Some(0));
                         }
                         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -579,24 +663,35 @@ mod tests {
             },
         ];
 
-        assert_eq!(visible_rows(&entries, &profiles, "STEAM")[0].entry, 2);
-        for query in ["project", "dev n-pro"] {
+        let steam = visible_rows(&entries, &profiles, "STEAM");
+        assert_eq!(steam[0].entry, 2);
+        assert_eq!(steam[0].highlights, vec![0..5]);
+        for (query, parent_hits, child_hit) in
+            [("project", vec![], 2..9), ("dev n-pro", vec![0..3], 0..5)]
+        {
             assert_eq!(
                 visible_rows(&entries, &profiles, query),
                 [
                     VisibleRow {
                         entry: 0,
                         branch: Branch::Profile,
-                        matches: false
+                        matches: false,
+                        label: Cow::Borrowed("dev"),
+                        highlights: parent_hits,
                     },
                     VisibleRow {
                         entry: 1,
                         branch: Branch::LastChild,
-                        matches: true
+                        matches: true,
+                        label: Cow::Borrowed("n-project"),
+                        highlights: vec![child_hit],
                     },
                 ]
             );
         }
+        let mains = visible_rows(&entries, &profiles, "main");
+        assert_eq!(mains[0].label, "dev main");
+        assert_eq!(mains[0].highlights, vec![4..8]);
         assert!(visible_rows(&entries, &profiles, "missing").is_empty());
     }
 
