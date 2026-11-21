@@ -1,5 +1,6 @@
 """Render the real Nook selector in KGX on the private display from Xvfb."""
 
+import json
 import os
 import shlex
 import shutil
@@ -20,6 +21,7 @@ RUNNING = [
 ]
 PROFILES = ("dev", "postgres", "signal", "staging", "steam", "zotero")
 SAVED = (("dev", "n-scratch"), ("dev", "n-web-api"))
+STOPPING = (("signal", "main"),)
 MIB = 1024 * 1024
 WINDOW_WIDTH, WINDOW_HEIGHT = 1100, 430
 MARGIN = 36
@@ -33,8 +35,12 @@ def systemctl(root, command, *args):
     """Serve only the read operations needed by the selector."""
     running = {unit(profile, instance) for profile, instance, *_ in RUNNING}
     if command == "list-units":
-        for service in sorted(running):
-            print(f"{service} loaded active running Nook")
+        units = [{"unit": service, "active": "active"} for service in sorted(running)]
+        units.extend(
+            {"unit": unit(profile, instance), "active": "deactivating", "job": "stop"}
+            for profile, instance in STOPPING
+        )
+        print(json.dumps(units))
     elif command == "is-active":
         return int(args[-1] not in running)
     elif command == "show":

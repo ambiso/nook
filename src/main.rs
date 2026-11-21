@@ -14,9 +14,9 @@ use nook::{
     },
     desktop, host_paths, storage,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     env, fs,
     io::{self, IsTerminal, Read, Write},
     os::unix::fs::PermissionsExt,
@@ -497,7 +497,30 @@ fn launch(
 struct Choice {
     profile: usize,
     instance: String,
+    state: InstanceState,
+}
+
+#[derive(Clone, Copy, Default)]
+struct InstanceState {
     running: bool,
+    stopping: bool,
+}
+
+#[derive(Deserialize)]
+struct LoadedUnit {
+    unit: String,
+    active: String,
+    job: Option<String>,
+}
+
+impl LoadedUnit {
+    fn state(&self) -> InstanceState {
+        InstanceState {
+            running: matches!(self.active.as_str(), "active" | "reloading" | "refreshing"),
+            // A queued stop may still have ActiveState=active.
+            stopping: self.active == "deactivating" || self.job.as_deref() == Some("stop"),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -607,7 +630,7 @@ fn print_choices(profiles: &[Profile], choices: &[Choice], format: ListFormat) -
             Ok(ListedInstance {
                 profile: profiles[choice.profile].get("name")?,
                 instance: &choice.instance,
-                running: choice.running,
+                running: choice.state.running,
                 usage: usage.next().unwrap_or_default(),
             })
         })
@@ -635,19 +658,32 @@ fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
             "--all",
             "--no-legend",
             "--plain",
+            "--output=json",
             "sandbox-*@*.service",
         ])
         .output()?;
     if !output.status.success() {
         return Err("cannot list sandbox services".into());
     }
-    let units = String::from_utf8_lossy(&output.stdout);
+    let units: HashMap<_, _> = serde_json::from_slice::<Vec<LoadedUnit>>(&output.stdout)?
+        .into_iter()
+        .map(|unit| {
+            let state = unit.state();
+            (unit.unit, state)
+        })
+        .collect();
     let mut choices = Vec::new();
     for (index, profile) in profiles.iter().enumerate() {
+        let state = |instance: &str| -> Result<InstanceState> {
+            Ok(units
+                .get(&profile.unit(instance)?)
+                .copied()
+                .unwrap_or_default())
+        };
         choices.push(Choice {
             profile: index,
             instance: "main".into(),
-            running: is_running(profile, "main"),
+            state: state("main")?,
         });
         // Loaded units disappear after shutdown or a host reboot. The saved
         // homes are the durable catalog for named instances.
@@ -656,16 +692,16 @@ fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
             format!("sandbox-{}-{}@", profile.owner_key()?, profile.get("name")?),
             format!("sandbox-{}-{}@", profile.host_uid()?, profile.get("name")?),
         ];
-        for line in units.lines() {
-            let instance = line
-                .split_whitespace()
-                .next()
-                .and_then(|unit| prefixes.iter().find_map(|prefix| unit.strip_prefix(prefix)))
+        for (unit, unit_state) in &units {
+            let instance = prefixes
+                .iter()
+                .find_map(|prefix| unit.strip_prefix(prefix))
                 .and_then(|unit| unit.strip_suffix(".service"));
             if let Some(instance) = instance
                 && instance != "main"
                 && valid_instance(instance)
-                && is_running(profile, instance)
+                && (unit_state.running || unit_state.stopping)
+                && *unit == profile.unit(instance)?
             {
                 instances.insert(instance.into());
             }
@@ -673,7 +709,7 @@ fn choices(profiles: &[Profile]) -> Result<Vec<Choice>> {
         for instance in instances {
             choices.push(Choice {
                 profile: index,
-                running: is_running(profile, &instance),
+                state: state(&instance)?,
                 instance,
             });
         }

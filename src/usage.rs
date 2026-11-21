@@ -58,7 +58,7 @@ impl UsageMonitor {
     }
 
     pub fn sample(&mut self, profiles: &[Profile], entries: &[Choice]) -> Vec<Usage> {
-        let output = if entries.iter().any(|entry| entry.running) {
+        let output = if entries.iter().any(|entry| entry.state.running) {
             // Query all active units together so refresh costs one process, not one per row.
             Command::new("systemctl")
                 .args([
@@ -97,7 +97,7 @@ impl UsageMonitor {
             .iter()
             .map(|entry| {
                 let mut usage = Usage::default();
-                if !entry.running {
+                if !entry.state.running {
                     return usage;
                 }
                 let Ok(unit) = profiles[entry.profile].unit(&entry.instance) else {

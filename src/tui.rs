@@ -1,5 +1,5 @@
 use crate::{
-    Choice, Profile, Result, choices, delete_instance, new_ephemeral_id, parse_name,
+    Choice, InstanceState, Profile, Result, choices, delete_instance, new_ephemeral_id, parse_name,
     prepare_deletion, request_stop,
     storage::SavedInstance,
     tui_colors::ProfilePalette,
@@ -31,12 +31,17 @@ struct DeletePrompt {
     error: Option<String>,
 }
 
-pub fn running_indicator(running: bool) -> Span<'static> {
-    if running {
-        Span::styled("● ", Style::new().fg(Color::Green))
+const STATUS_WIDTH: usize = 11;
+
+fn status_span(state: InstanceState) -> Span<'static> {
+    let (label, style) = if state.stopping {
+        ("◌ stopping…", Style::new().fg(Color::Yellow))
+    } else if state.running {
+        ("● running", Style::new().fg(Color::Green))
     } else {
-        Span::raw("  ")
-    }
+        ("○ stopped", Style::new().add_modifier(Modifier::DIM))
+    };
+    Span::styled(format!(" {label:<STATUS_WIDTH$}"), style)
 }
 
 struct Columns {
@@ -70,8 +75,8 @@ impl Columns {
             .max()
             .unwrap_or(0)
             .max("Sandbox".len());
-        // Reserve two cells each for the selection marker and the running dot.
-        let base_width = 4 + name + 1 + "running".len();
+        // Reserve two cells for the selection marker.
+        let base_width = 2 + name + 1 + STATUS_WIDTH;
         let stats_count = width.saturating_sub(base_width) / (1 + Self::STAT_WIDTH);
         Self { name, stats_count }
     }
@@ -283,7 +288,7 @@ impl NamePrompt {
         Ok(Choice {
             profile: self.profile,
             instance,
-            running: false,
+            state: InstanceState::default(),
         })
     }
 }
@@ -338,7 +343,7 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 frame.render_widget(border, list_area);
                 let columns = Columns::fit(header_area.width.into(), profiles, &entries, &visible);
                 let header = format!(
-                    "    {:<width$} {:<7}{}",
+                    "  {:<width$} {:<STATUS_WIDTH$}{}",
                     "Sandbox",
                     "Status",
                     columns.stats("RAM", "Swap", "Uptime", "CPU"),
@@ -351,7 +356,6 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                     let usage = &usage[row.entry];
                     let prefix = row.branch.prefix();
                     let name_width = columns.name - prefix.chars().count();
-                    let status = if choice.running { "running" } else { "stopped" };
                     let cpu = usage.cpu_percent.map_or_else(
                         || "—".into(),
                         |percent| format!("{percent:.1}%"),
@@ -362,12 +366,10 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                         &format_uptime(usage.uptime_seconds),
                         &cpu,
                     );
-                    let mut spans = vec![
-                        Span::raw(prefix),
-                        running_indicator(choice.running),
-                    ];
+                    let mut spans = vec![Span::raw(prefix)];
                     spans.extend(name_spans(row, name_width, profile_colors[choice.profile]));
-                    spans.push(Span::raw(format!(" {status:<7}{metrics}")));
+                    spans.push(status_span(choice.state));
+                    spans.push(Span::raw(metrics));
                     let line = Line::from(spans);
                     if row.matches {
                         ListItem::new(line)
@@ -576,12 +578,14 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                             return Ok(Some(Choice {
                                 profile: choice.profile,
                                 instance: new_ephemeral_id()?,
-                                running: false,
+                                state: InstanceState::default(),
                             }));
                         }
                     }
                     KeyCode::Char('s') => {
-                        if let Some(choice) = selected_choice {
+                        if let Some(choice) = selected_choice
+                            && !choice.state.stopping
+                        {
                             let profile = &profiles[choice.profile];
                             if !request_stop(profile, &choice.instance)?.success() {
                                 status = Some(format!(
@@ -591,11 +595,6 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                                 ));
                                 continue;
                             }
-                            status = Some(format!(
-                                "Stopping {}/{}…",
-                                profile.get("name")?,
-                                choice.instance
-                            ));
                             (entries, usage) = refresh(profiles, &mut monitor)?;
                             refreshed = Instant::now();
                         }
@@ -649,17 +648,20 @@ mod tests {
             Choice {
                 profile: 0,
                 instance: "main".into(),
-                running: true,
+                state: InstanceState {
+                    running: true,
+                    stopping: false,
+                },
             },
             Choice {
                 profile: 0,
                 instance: "n-project".into(),
-                running: false,
+                state: InstanceState::default(),
             },
             Choice {
                 profile: 1,
                 instance: "main".into(),
-                running: false,
+                state: InstanceState::default(),
             },
         ];
 
@@ -705,12 +707,12 @@ mod tests {
         let existing = Choice {
             profile: 0,
             instance: "n-my-project".into(),
-            running: false,
+            state: InstanceState::default(),
         };
         let choice = prompt.submit(&[existing]).unwrap();
         assert_eq!(choice.profile, 1);
         assert_eq!(choice.instance, "n-my-project");
-        assert!(!choice.running);
+        assert!(!choice.state.running);
         assert!(prompt.submit(&[choice]).is_err());
 
         for invalid in [
@@ -726,15 +728,28 @@ mod tests {
     }
 
     #[test]
-    fn running_instances_have_a_green_indicator() {
-        assert_eq!(running_indicator(true).content, "● ");
-        assert!(
-            running_indicator(true)
-                .style
-                .fg
-                .is_some_and(|color| color == Color::Green)
-        );
-        assert_eq!(running_indicator(false).content, "  ");
-        assert_eq!(running_indicator(false).style.fg, None);
+    fn status_markers_take_the_same_space() {
+        let states = [
+            (
+                InstanceState {
+                    running: true,
+                    stopping: false,
+                },
+                "● running",
+            ),
+            (
+                InstanceState {
+                    running: true,
+                    stopping: true,
+                },
+                "◌ stopping…",
+            ),
+            (InstanceState::default(), "○ stopped"),
+        ];
+        for (state, label) in states {
+            let span = status_span(state);
+            assert_eq!(span.content.trim(), label);
+            assert_eq!(span.width(), STATUS_WIDTH + 1);
+        }
     }
 }

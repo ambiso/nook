@@ -485,9 +485,10 @@ In the selector, use arrows or **j/k** to select a row, **Enter** to launch/ente
 empty query exits search),
 **n** to create a named instance from that profile, **e** for an ephemeral
 instance, **s** to stop, **d** to delete a stopped named instance after confirmation,
-and **q** to quit. Running instances have a green **●** to their left. Named
-instances remain listed when stopped. Names accept 1–24 lowercase letters,
-digits, or hyphens.
+and **q** to quit. The Status column shows **● running**, **○ stopped**, and
+**◌ stopping…** while systemd has a stop pending or is shutting the instance
+down. Named instances remain listed when stopped. Names accept 1–24 lowercase
+letters, digits, or hyphens.
 
 Each profile row represents its main instance. Named and ephemeral instances
 appear beneath it. When a search matches only a child, its profile stays visible

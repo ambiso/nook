@@ -110,6 +110,22 @@ def main():
             f"#!{sys.executable}\n"
             "import json, os, sys\n"
             "from pathlib import Path\n"
+            "if sys.argv[1] == 'list-units':\n"
+            "    active = os.environ.get('NOOK_SMOKE_STATE', 'inactive')\n"
+            "    units = [{'unit': unit, 'active': active} for unit in json.loads(os.environ['NOOK_SMOKE_UNITS'])]\n"
+            "    log = Path(os.environ['NOOK_SMOKE_STOP_LOG'])\n"
+            "    if os.environ.get('NOOK_SMOKE_STOP_TRANSITION') and log.exists():\n"
+            "        unit = json.loads(log.read_text().splitlines()[0])[-1]\n"
+            "        row = next(row for row in units if row['unit'] == unit)\n"
+            "        samples = log.with_suffix('.samples')\n"
+            "        count = int(samples.read_text()) if samples.exists() else 0\n"
+            "        samples.write_text(str(count + 1))\n"
+            "        if count == 0:\n"
+            "            row['job'] = 'stop'\n"
+            "        else:\n"
+            "            row['active'] = 'deactivating' if count == 1 else 'inactive'\n"
+            "    print(json.dumps(units))\n"
+            "    sys.exit(0)\n"
             "if sys.argv[1] == 'is-active':\n"
             "    sys.exit(0 if os.environ.get('NOOK_SMOKE_STATE') == 'active' else 1)\n"
             "if sys.argv[1] == 'show':\n"
@@ -120,7 +136,7 @@ def main():
             "if sys.argv[1] == 'stop':\n"
             "    with open(os.environ['NOOK_SMOKE_STOP_LOG'], 'a') as log:\n"
             "        log.write(json.dumps(sys.argv[2:]) + '\\n')\n"
-            "sys.exit(0 if sys.argv[1] in ('list-units', 'stop') else 1)\n"
+            "sys.exit(0 if sys.argv[1] == 'stop' else 1)\n"
         )
         systemctl.chmod(0o700)
         environment = os.environ | {
@@ -129,6 +145,13 @@ def main():
             "NOOK_SMOKE_LOG": str(started),
             "NOOK_SMOKE_STOP_LOG": str(stopped),
             "NOOK_SMOKE_STATE": "inactive",
+            "NOOK_SMOKE_UNITS": json.dumps(
+                [
+                    f"sandbox-{owner_key()}-{name}@{instance}.service"
+                    for name in names
+                    for instance in ("main", "n-saved")
+                ]
+            ),
         }
         cases = [
             ([("Nook", b"n"), ("template:", b"project\r")], names[0], "n-project"),
@@ -222,8 +245,9 @@ def main():
                 select_instance(
                     binary,
                     profiles,
-                    environment | {"NOOK_SMOKE_STATE": "active"},
-                    [("Nook", b"s"), ("Stopping", b"q")],
+                    environment
+                    | {"NOOK_SMOKE_STATE": "active", "NOOK_SMOKE_STOP_TRANSITION": "1"},
+                    [("Nook", b"s"), ("stopping…", b""), ("○ stopped", b"q")],
                 )
                 == 0
             )
