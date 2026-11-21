@@ -3,6 +3,7 @@
 mod completion;
 mod portal;
 mod tui;
+mod tui_usage;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use colored_json::{Color, ColorMode, Paint, Style};

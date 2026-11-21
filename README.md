@@ -481,6 +481,12 @@ and **q** to quit. Running instances have a green **●** to their left. Named
 instances remain listed when stopped. Names accept 1–24 lowercase letters,
 digits, or hyphens.
 
+On wider terminals the selector shows RAM, Swap, Uptime, and CPU. RAM counts
+resident anonymous and shared memory, including tmpfs, and excludes ordinary
+file cache. Swap is the amount charged to the sandbox by the kernel. Uptime
+starts when systemd marks the sandbox ready. CPU is averaged between refreshes,
+with 100% representing one fully used core. A dash means no reading is available.
+
 New instances reuse their profile's configuration and permissions, starting
 with a clean home. They do not copy projects, credentials, or caches from the
 main instance. Main homes persist by default; `persistent = false` makes only

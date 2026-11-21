@@ -1,13 +1,15 @@
 use crate::{
     Choice, Profile, Result, choices, delete_instance, new_ephemeral_id, parse_name,
-    prepare_deletion, request_stop, storage::SavedInstance,
+    prepare_deletion, request_stop,
+    storage::SavedInstance,
+    tui_usage::{Usage, UsageMonitor},
 };
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::{
     io::{self, IsTerminal},
@@ -32,6 +34,115 @@ pub fn running_indicator(running: bool) -> Span<'static> {
     } else {
         Span::raw("  ")
     }
+}
+
+fn profile_color(name: &str) -> Color {
+    const PALETTE: [Color; 6] = [
+        Color::Blue,
+        Color::Cyan,
+        Color::Green,
+        Color::Magenta,
+        Color::Red,
+        Color::Yellow,
+    ];
+    // FNV-1a keeps the color tied to the profile name across runs and list edits.
+    let hash = name.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    PALETTE[(hash % PALETTE.len() as u64) as usize]
+}
+
+struct Columns {
+    profile: usize,
+    instance: usize,
+    stats_count: usize,
+}
+
+impl Columns {
+    const STAT_WIDTH: usize = 10;
+
+    fn fit(width: usize, profiles: &[Profile], entries: &[Choice]) -> Self {
+        let profile = profiles
+            .iter()
+            .map(|p| p.values["name"].len())
+            .max()
+            .unwrap_or(0)
+            .max("Profile".len());
+        let instance = entries
+            .iter()
+            .map(|entry| entry.instance.len())
+            .max()
+            .unwrap_or(0)
+            .max("Instance".len());
+        // Reserve two cells each for the selection marker and the running dot.
+        let base_width = 4 + profile + 1 + instance + 1 + "running".len();
+        let stats_count = width.saturating_sub(base_width) / (1 + Self::STAT_WIDTH);
+        Self {
+            profile,
+            instance,
+            stats_count,
+        }
+    }
+
+    fn identity_tail(&self, instance: &str, status: &str) -> String {
+        format!(" {instance:<width$} {status:<7}", width = self.instance)
+    }
+
+    fn stats(&self, ram: &str, swap: &str, uptime: &str, cpu: &str) -> String {
+        let mut text = String::new();
+        let mut append = |value| {
+            use std::fmt::Write;
+            let _ = write!(text, " {value:>width$}", width = Self::STAT_WIDTH);
+        };
+        if self.stats_count >= 3 {
+            append(uptime);
+        }
+        if self.stats_count >= 4 {
+            append(cpu);
+        }
+        if self.stats_count >= 2 {
+            append(ram);
+            append(swap);
+        }
+        text
+    }
+}
+
+fn format_bytes(bytes: Option<u64>) -> String {
+    let Some(bytes) = bytes else {
+        return "—".into();
+    };
+    let mut value = bytes as f64;
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"] {
+        if value < 1024.0 || unit == "EiB" {
+            return if unit == "B" {
+                format!("{bytes} B")
+            } else {
+                format!("{value:.1} {unit}")
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!()
+}
+
+fn format_uptime(uptime: Option<Duration>) -> String {
+    let Some(uptime) = uptime else {
+        return "—".into();
+    };
+    let seconds = uptime.as_secs();
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m {}s", seconds / 60, seconds % 60),
+        3600..86400 => format!("{}h {}m", seconds / 3600, seconds / 60 % 60),
+        _ => format!("{}d {}h", seconds / 86400, seconds / 3600 % 24),
+    }
+}
+
+fn refresh(profiles: &[Profile], monitor: &mut UsageMonitor) -> Result<(Vec<Choice>, Vec<Usage>)> {
+    let entries = choices(profiles)?;
+    let usage = monitor.sample(profiles, &entries);
+    Ok((entries, usage))
 }
 
 fn matching_indices(entries: &[Choice], profiles: &[Profile], query: &str) -> Vec<usize> {
@@ -77,7 +188,8 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
     // Ratatui restores raw mode, cursor visibility and the alternate screen
     // after normal errors and panics, before a selected shell takes over.
     ratatui::run(|terminal| {
-        let mut entries = choices(profiles)?;
+        let mut monitor = UsageMonitor::default();
+        let (mut entries, mut usage) = refresh(profiles, &mut monitor)?;
         let mut selection = ListState::default().with_selected(Some(0));
         let mut refreshed = Instant::now();
         let mut prompt: Option<NamePrompt> = None;
@@ -98,28 +210,38 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 let [list_area, help_area] =
                     Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
                         .areas(frame.area());
+                let border = Block::bordered().title(format!(" Nook ({}/{}) ", visible.len(), entries.len()));
+                let [header_area, rows_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)])
+                    .areas(border.inner(list_area));
+                frame.render_widget(border, list_area);
+                let columns = Columns::fit(header_area.width.into(), profiles, &entries);
+                let header = format!(
+                    "    {:<width$}{}{}",
+                    "Profile",
+                    columns.identity_tail("Instance", "Status"),
+                    columns.stats("RAM", "Swap", "Uptime", "CPU"),
+                    width = columns.profile,
+                );
+                frame.render_widget(Line::styled(header, Style::new().add_modifier(Modifier::BOLD)), header_area);
+
                 let rows = visible.iter().map(|&index| {
                     let choice = &entries[index];
-                    let text = format!(
-                        "{:<24} {:<22} {}",
-                        profiles[choice.profile].values["name"],
-                        choice.instance,
-                        if choice.running { "running" } else { "stopped" },
-                    );
+                    let usage = &usage[index];
+                    let profile = &profiles[choice.profile].values["name"];
+                    let status = if choice.running { "running" } else { "stopped" };
+                    let cpu = usage.cpu_percent.map_or_else(|| "—".into(), |percent| format!("{percent:.1}%"));
                     ListItem::new(Line::from(vec![
                         running_indicator(choice.running),
-                        Span::raw(text),
+                        Span::styled(format!("{profile:<width$}", width = columns.profile), Style::new().fg(profile_color(profile))),
+                        Span::raw(columns.identity_tail(&choice.instance, status)),
+                        Span::raw(columns.stats(&format_bytes(usage.ram), &format_bytes(usage.swap), &format_uptime(usage.uptime), &cpu)),
                     ]))
                 });
                 let list = List::new(rows)
-                    .block(Block::bordered().title(format!(
-                        " Nook ({}/{}) ",
-                        visible.len(),
-                        entries.len()
-                    )))
                     .highlight_symbol("› ")
-                    .highlight_style(Style::new().fg(Color::Cyan));
-                frame.render_stateful_widget(list, list_area, &mut selection);
+                    .highlight_spacing(HighlightSpacing::Always)
+                    .highlight_style(Style::new().add_modifier(Modifier::BOLD));
+                frame.render_stateful_widget(list, rows_area, &mut selection);
                 let search_line = if search_draft.is_some() {
                     format!("/{active_query}_   Enter: apply   Esc: cancel   Ctrl+U: clear")
                 } else if query.is_empty() {
@@ -212,7 +334,8 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                             match delete_instance(&profiles[choice.profile], &choice.instance) {
                                 Ok(()) => {
                                     deletion = None;
-                                    entries = choices(profiles)?;
+                                    (entries, usage) = refresh(profiles, &mut monitor)?;
+                                    refreshed = Instant::now();
                                 }
                                 Err(error) => input.error = Some(error.to_string()),
                             }
@@ -332,7 +455,8 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                                 profile.get("name")?,
                                 choice.instance
                             ));
-                            entries = choices(profiles)?;
+                            (entries, usage) = refresh(profiles, &mut monitor)?;
+                            refreshed = Instant::now();
                         }
                     }
                     KeyCode::Char('d') => {
@@ -358,7 +482,7 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                 && deletion.is_none()
                 && refreshed.elapsed() >= Duration::from_secs(2)
             {
-                entries = choices(profiles)?;
+                (entries, usage) = refresh(profiles, &mut monitor)?;
                 refreshed = Instant::now();
             }
         }
