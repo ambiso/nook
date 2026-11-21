@@ -283,8 +283,8 @@ pub fn select(profiles: &[Profile]) -> Result<Option<Choice>> {
                         &cpu,
                     );
                     let line = Line::from(vec![
-                        running_indicator(choice.running),
                         Span::raw(prefix),
+                        running_indicator(choice.running),
                         Span::styled(format!("{name:<name_width$}"), Style::new().fg(profile_colors[choice.profile])),
                         Span::raw(format!(" {status:<7}{metrics}")),
                     ]);
